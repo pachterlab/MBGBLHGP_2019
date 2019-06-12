@@ -1,0 +1,207 @@
+---
+title: "Pseudotime"
+author: "Lambda"
+date: "5/15/2019"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dyno)
+library(dyneval)
+library(tidyverse)
+library(Seurat)
+library(Matrix)
+library(gridExtra)
+library(ggalluvial)
+theme_set(theme_bw())
+name_use <- "neuron10k_v3"
+seus <- readRDS(paste0("./output/", name_use, "/seurat.rds"))
+```
+
+# Pseudotime
+Finally, I wrote a loop.
+```{r}
+for (i in names(seus)) {
+  Idents(seus[[i]]) <- "label"
+}
+```
+
+This dataset is mainly neurons or their precursors, but it also contains red blood cells and epithilial cells. I'll only use the neuron-related cells for the pseudotime analysis (that's why Monocle3's partition is helpful, but it's still in alpha stage and I have trouble installing it, and I think it's safer to use a published method for benchmarking), to better see the lineage within neurons and their precursors. Also, to facilitate comparison, I'll use the same set of cells for all 4 methods. 
+```{r}
+neurons_list <- map(seus, ~ WhichCells(.x, idents = c("NPCs", "Neurons", "qNSCs", "aNSCs")))
+neurons_inter <- reduce(neurons_list, intersect)
+seus_neuron <- map(seus, ~subset(.x, cells = neurons_inter))
+```
+
+```{r}
+wraps <- map(seus_neuron, ~ wrap_expression(expression = t(GetAssayData(.x, "data")),
+                      counts = t(GetAssayData(.x, "counts"))))
+wraps <- map(wraps, ~ add_grouping(.x, .x$seurat_clusters))
+wraps <- map2(wraps, seus_neuron, 
+              ~ add_prior_information(.x, end_id = WhichCells(.y, idents = "Neurons")))
+```
+
+```{r}
+models <- map(wraps, infer_trajectory, method = ti_projected_slingshot())
+```
+
+```{r}
+models <- map(models, ~ add_pseudotime(.x, calculate_pseudotime(.x)))
+```
+
+```{r}
+# Save the models
+saveRDS(models, file = paste0("./output/", name_use, "/slingshot_models.rds"))
+```
+
+```{r, fig.width=9, fig.height=6}
+plts <- pmap(list(models, seus_neuron, names(seus_neuron)), 
+             ~ plot_dimred(..1, grouping = ..2$label, alpha_cells = 0.5) +
+               ggtitle(..3))
+grid.arrange(grobs = plts, ncol = 2)
+```
+
+Here I consistently get 2 lineages of neurons.
+```{r, fig.width=9, fig.height=6}
+plts <- pmap(list(models, seus_neuron, names(seus_neuron)), 
+             ~ plot_dimred(..1, grouping = ..2$seurat_clusters, alpha_cells = 0.5) +
+               ggtitle(..3) +
+               theme(legend.position = "none"))
+grid.arrange(grobs = plts, ncol = 2)
+```
+
+Because of the way the points overlap, it's hard to tell where each cluster is on this plot.
+```{r, fig.width=9, fig.height=6}
+plts <- pmap(list(models, seus_neuron, names(seus_neuron)), 
+             ~ plot_dimred(..1, color_cells = "pseudotime", alpha_cells = 0.5) +
+               ggtitle(..3))
+grid.arrange(grobs = plts, ncol = 2)
+```
+
+```{r, fig.width=12, fig.height=8}
+plts <- pmap(list(models, seus_neuron, names(seus_neuron)), 
+             ~ plot_dendro(..1, grouping = ..2$label) +
+               ggtitle(..3))
+grid.arrange(grobs = plts, ncol = 2)
+```
+
+This is kind of hard to read. I really wish that I can make the point size smaller.
+
+What to do for pseudotime benchmark:
+
+1. Compare pseudotime values, in each cluster and cell type
+2. Compare position of the cells on the lineage graph
+3. Compare trajectory differential expression
+
+```{r}
+cells_plot <- map(models, ~ .x$cell_ids) %>% 
+  reduce(intersect)
+pseudotime_dfs <- map2(models, seus_neuron,
+                       ~ tibble(pseudotime = .x$pseudotime[cells_plot],
+                                cluster = .y$seurat_clusters[cells_plot],
+                                label = .y$label[cells_plot],
+                                method = .y$orig.ident[cells_plot],
+                                barcode = cells_plot,
+                                grouping = .x$grouping[cells_plot])) %>% 
+  bind_rows()
+```
+
+Scatter plot of pseudotimes
+```{r}
+pseudotime_plt <- pseudotime_dfs %>% 
+  dplyr::select(pseudotime, method, barcode) %>% 
+  spread(method, pseudotime) %>% 
+  mutate(kallisto_cluster = pseudotime_dfs$cluster[pseudotime_dfs$method == "kallisto"],
+         kallisto_label = pseudotime_dfs$label[pseudotime_dfs$method == "kallisto"])
+pseudotime_plt2 <- pseudotime_plt %>% 
+  gather(key = "method", value = "pseudotime_method", alevin, cellranger, star) 
+```
+
+```{r}
+ggplot(pseudotime_plt2, aes(kallisto, pseudotime_method, color = kallisto_label)) + 
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  facet_grid(~ method) +
+  theme(legend.position = "bottom") +
+  coord_equal() +
+  labs(x = "kallisto pseudotime", y = "pseudotime") +
+  scale_color_discrete(name = "kallisto label")
+```
+
+```{r}
+ggplot(pseudotime_plt2, aes(kallisto, pseudotime_method, color = kallisto_cluster)) + 
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  facet_grid(~ method) +
+  theme(legend.position = "bottom") +
+  coord_equal()
+```
+
+This scattered cells are not of a particular cluster, and they are annotated as NPCs. How about the group assignment based on pseudotime?
+
+```{r}
+groupings <- pseudotime_dfs %>% 
+  dplyr::select(method, barcode, grouping) %>% 
+  spread(method, grouping)
+```
+
+```{r}
+(groupings_alluvial <- groupings %>% 
+  group_by(alevin, cellranger, kallisto, star) %>% 
+  dplyr::count() %>% 
+  arrange(desc(n)))
+```
+
+In most cases, the milestone groupings are the same. However, there're quite a few cells assigned to M2 in kallisto and M4 in all other methods; this is consistent with how pseudotime values for kallisto is smaller in the branch for M4. How do I visualize this? Alluvial plot.
+
+```{r}
+ggplot(groupings_alluvial, aes(y = n, axis1 = kallisto, axis2 = alevin, axis3 = cellranger, axis4 = star)) +
+  geom_flow(aes(fill = kallisto, color = kallisto), size = 0.3) +
+  scale_x_discrete(limits = c("kallisto", "alevin", "cellranger", "star"), expand = c(0,0)) +
+  geom_stratum() +
+  geom_text(stat = "stratum", label.strata = TRUE) +
+  labs(y = "Number of cells") +
+  #scale_fill_viridis_d(name = "kallisto grouping", option = "E") +
+  #scale_color_viridis_d(name = "kallisto grouping", option = "E") +
+  scale_y_continuous(expand = c(0,0))
+```
+
+Well, anyway. How about trajectory differential expession? There are different kinds of differential expression here, including the global overview, branch markers, and marker genes at bifurcation points. Which ones whall I use here for the benchmark? Since this benchmark is to show that kallisto gives similar results as existing methods in downstream analysis that finds biologically interesting hypotheses, I should choose the type of differential expression that is the most biologically interesting. 
+
+```{r}
+metrics
+```
+
+Since it's pretty obvious that the 4 different methods all resulted into the same graph topology, I won't test for topology here. I'm more interested in cell ordering, branch assignment, and feature importance here. So I'll use the following metrics: Geodesic distance correlation, linear regression R^2, feature importance weighted correlation, feature importance enrichment ks, branch overlap, and milestone overlap. Here feature importance weighted correlation means that the correlation coefficient is weighted by importance of gene of interest in predicting cell position on the trajectory. 
+
+Shall I do something similar to the gene and cell correlation in the earlier analysis? There I just used a somewhat arbitrary threshold to pick top marker genes. Shall I also use feature importance? There feature importance would mean how perturbing the gene would lead to a wrong cluster assignment. But there's no right or wrong here, since we don't have the ground truth. So I'll still stick to my way.
+
+```{r}
+models <- map(models, add_cell_waypoints)
+```
+
+```{r}
+metrics_use <- c("correlation", "rf_mse", "rf_nmse", "rf_rsq", "lm_mse", "lm_nmse",
+                 "lm_rsq", "featureimp_cor", "featureimp_wcor", "F1_branches", "F1_milestones")
+metrics <- map_dfr(models[-1], dyneval::calculate_metrics, 
+                   dataset = models$kallisto, metrics = metrics_use,
+                   expression_source = wraps$kallisto$expression)
+```
+
+```{r}
+metrics %>% 
+  mutate(method = names(models)[-1]) %>% 
+  select(method, !!metrics_use) %>% 
+  gather("metric", "value", -method) %>% 
+  ggplot(aes(metric, method)) +
+  geom_tile(aes(fill = value)) +
+  scale_fill_viridis_c() +
+  geom_text(aes(label = round(value, 3)), color = "gray60") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+```
+
+All those metrics should take absolute value between 0 and 1. The overlap (F1) metrics should be between 0 and 1. So overall, it's pretty good. Except the milestone one is a bit screwed up. It's so convenient to use dyneval's metrics. However, it's not flexible enough for me to peek into this in individual clusters.

@@ -1,0 +1,96 @@
+---
+title: "Cell type annotation"
+author: "Lambda"
+date: "5/15/2019"
+output: 
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE}
+library(SingleR)
+library(Seurat)
+library(tidyverse)
+source("./code/utils.R")
+theme_set(theme_bw())
+name_use <- "neuron10k_v3"
+species <- "Mus musculus"
+gns <- read_csv(paste0("./data/Ensembl/gns_", str_replace(species, " ", "_"), ".csv"))
+seus <- readRDS(paste0("./output/", name_use, "/seurat.rds"))
+n_clusts <- map_dbl(seus, ~ length(unique(.x@meta.data$RNA_snn_res.1)))
+```
+
+Here I'm using the package `SingleR` for cell type annotation. How it works is to first find highly variable genes and correlate (Spearman) those genes with reference bulk RNA-seq data of pure cell types. This will then find a couple of cell types that have relatively high correlation. Then, the package will choose genes variably expressed between the narrowed down cell types, and correlate these genes to the reference to further narrow down the cell type annotation. This can be done cell by cell or cluster by cluster; I'm doing it cell by cell here.
+
+```{r}
+# Load the reference
+data("mouse.rnaseq")
+```
+
+```{r}
+# Use Ensembl gene ID in reference
+ref_use <- mouse.rnaseq$data
+rownames(ref_use) <- gns$gene[match(rownames(ref_use), gns$gene_name)]
+ref_use <- ref_use[!is.na(rownames(ref_use)),]
+```
+
+```{r, results='hide', cache=TRUE}
+annots <- map(seus, ~ SingleR("single", GetAssayData(.x), ref_data = ref_use,
+                              types = mouse.rnaseq$types)) %>% 
+  setNames(names(seus))
+```
+
+```{r}
+cell_types <- map2(annots, seus, 
+                   ~ singler2df(.x, .y$RNA_snn_res.1) %>% 
+                     mutate(method = .y$orig.ident)) %>% 
+  bind_rows() %>% 
+  mutate(cluster = factor(cluster, levels = as.character(0:(max(n_clusts) - 1))))
+```
+
+Do the same barcode from the 4 methods have the same cell type annotation? If not, then how often do they have the same annotation?
+```{r}
+cell_types %>% 
+  dplyr::select(-cluster, -max_score) %>% 
+  spread(key = method, value = label) %>% 
+  mutate(n_types = pmap_int(list(kallisto, alevin, cellranger, star),
+                        ~ length(unique(c(..1, ..2, ..3, ..4))))) %>% 
+  dplyr::count(n_types)
+```
+
+That's good. The vast majority of cells have the same annotations. How about the distribution of max score? This is kind of like an upper bound to Spearman correlation of the individual cell to bulk RNA-seq data.
+```{r cell_type_cor, fig.height=6}
+ggplot(cell_types, aes(label, max_score, color = method)) +
+  geom_violin(position = "dodge") +
+  geom_jitter(size = 0.5, alpha = 0.5, position = position_dodge(width = 0.9)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+```
+
+Over all, the 4 methods seem quite similar. What are the cell type annotations of each cluster?
+```{r cell_type_cluster, fig.height=6}
+ggplot(cell_types, aes(cluster, fill = label)) +
+  geom_bar(position = "fill") +
+  scale_fill_viridis_d(option = "E") +
+  facet_wrap(~ method, ncol = 1, strip.position = "right") +
+  labs(y = "proportion")
+```
+
+```{r}
+# Add cell type annotation to metadata
+labels <- split(cell_types$label, cell_types$method)
+labels <- labels[names(seus)]
+seus <- map2(seus, labels, AddMetaData, col.name = "label")
+```
+
+```{r}
+saveRDS(cell_types, paste0("./output/", name_use, "/cell_types.rds"))
+saveRDS(seus, paste0("./output/", name_use, "/seurat.rds"))
+```
+
+```{r}
+sessionInfo()
+```

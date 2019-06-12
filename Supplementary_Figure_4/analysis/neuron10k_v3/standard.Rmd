@@ -1,0 +1,324 @@
+---
+title: "Standard workflow benchmark"
+author: "Lambda"
+date: "5/15/2019"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE}
+library(BUSpaRse)
+library(UpSetR)
+library(Seurat)
+library(EGSEA)
+library(DropletUtils)
+library(Matrix)
+library(tidyverse)
+library(gridExtra)
+theme_set(theme_bw())
+source("./code/read_count_output.R")
+source("./code/plot_comparison.R")
+source("./code/gsea.R")
+name_regex <- "heart1k_v3"
+name_use <- "heart1k_v3"
+species <- "Mus musculus"
+```
+
+# Load data
+```{r}
+mats <- list()
+mats$kallisto <- read_count_output(paste0("../kallisto_out_ensembl/", name_use),
+                                   name = "genes", tcc = FALSE)
+mats$cellranger <- read_cellranger(paste0("../cellranger_out_ensembl/cellranger3_",
+                                          name_use, "_out/outs/raw_feature_bc_matrix"))
+colnames(mats$cellranger) <- colnames(mats$cellranger) %>% str_remove("-1")
+```
+
+Check the dimensions of the matrices
+```{r}
+map(mats, dim)
+```
+
+Looks like Alevin removed some genes. CellRanger already has filtered matrix.
+
+```{r}
+cr_filtered <- read_cellranger(paste0("../cellranger_out_ensembl/cellranger3_",
+                                          name_use, "_out/outs/filtered_feature_bc_matrix"))
+```
+
+```{r}
+# Reformat cell barcodes
+cr_filtered_bc <- colnames(cr_filtered) %>% str_remove("-1")
+colnames(cr_filtered) <- cr_filtered_bc
+```
+
+```{r}
+dim(cr_filtered)
+```
+
+# Compare barcodes
+```{r barcode_upset}
+bc_list <- map(mats, colnames)
+upset(fromList(bc_list), order.by = "freq")
+```
+
+# Compare filtering
+```{r}
+# Compute barcode ranks
+bc_ranks <- map(mats, barcodeRanks, lower = 1000)
+```
+
+```{r knee}
+knee_plot(bc_ranks) +
+  geom_vline(xintercept = ncol(cr_filtered), size = 0.3, color = "blue") +
+  annotate("text", x = ncol(cr_filtered), y = 3e3, label = "CellRanger threshold",
+           color = "blue")
+```
+
+What's that step-like thing in alevin results? The flat part is because of different ranks associated with the same total count. The jump up is because of a jump in total count for similar ranks. This also happens to kallisto bus without single gene mode. Why does this happen? The smoother curves are when one total count corresponds to one rank. 
+
+```{r}
+# Filter barcodes 
+mats_filtered <- imap(mats, ~ .x[, Matrix::colSums(.x) > bc_ranks[[.y]]$inflection])
+mats_filtered$cellranger <- cr_filtered
+# Remove all 0 genes
+mats_filtered <- map(mats_filtered, ~ .x[Matrix::rowSums(.x) > 0, ])
+```
+
+```{r}
+map(mats_filtered, dim)
+```
+
+Now see how well the barcodes overlap in the filtered matrix.
+```{r barcode_upset_filtered}
+bc_list <- map(mats_filtered, colnames)
+upset(fromList(bc_list), order.by = "freq")
+```
+
+Good. The vast majority of barcodes do overlap.
+
+```{r barcode_jaccard}
+# Jaccard index 
+bc_jaccard <- get_jaccard_matrix(bc_list)
+```
+
+```{r}
+saveRDS(bc_jaccard, paste0("./output/", name_use, "/bc_jaccard.rds"))
+```
+
+Do the non-overlapping barcodes tend to have low counts?
+```{r bc_counts}
+bcs_inter <- reduce(bc_list, intersect)
+bcs_diff <- setdiff(reduce(bc_list, union), bcs_inter)
+filtered_colsums <- map(mats_filtered, Matrix::colSums)
+intersect_count_plot(bcs_inter, bcs_diff, filtered_colsums)
+```
+
+As expected, the non-intersecting barcodes have low count compared to the intersecting barcodes.
+
+# Compare genes
+See how many remaining genes are in common
+```{r gene_upset}
+# after removing low count genes
+gene_list <- map(mats_filtered, rownames)
+upset(fromList(gene_list), order.by = "freq")
+```
+
+kallisto bus has the most genes, but the vasts majority of genes overlap.
+
+```{r gene_jaccard}
+gene_jaccard <- get_jaccard_matrix(gene_list)
+```
+
+```{r}
+saveRDS(gene_jaccard, paste0("./output/", name_use, "/gene_jaccard.rds"))
+```
+
+Do the non-overlapping genes tend to have low counts? Gene set enrichment analysis of the non-overlapping genes
+
+```{r gene_counts}
+genes_inter <- reduce(gene_list, intersect)
+genes_union <- reduce(gene_list, union)
+genes_diff <- setdiff(genes_union, genes_inter)
+filtered_rowsums <- map(mats_filtered, Matrix::rowSums)
+intersect_count_plot(genes_inter, genes_diff, filtered_rowsums)
+```
+
+So yes, the non-intersecting genes do tend to have low count (the y axis is on log scale).
+
+Here I do GSEA on the non-overlapping genes
+```{r}
+gns <- read_csv(paste0("./data/Ensembl/gns_", str_replace(species, " ", "_"), ".csv"))
+```
+
+```{r}
+kallisto_diff <- setdiff(gene_list$kallisto, reduce(gene_list[c("cellranger", "alevin", "star")], union))
+kd_entrez <- gns$entrezgene[gns$gene %in% kallisto_diff]
+mean(is.na(kd_entrez))
+```
+
+More than half of the genes peculiar to kallisto do not have an entrez ID.
+```{r}
+gns %>% 
+  filter(gene %in% kallisto_diff) %>% 
+  filter(is.na(entrezgene))
+```
+
+Those genes without entrez IDs here are all predicted genes, pseudogenes, or unannotated genes.
+
+```{r}
+mean(is.na(gns$entrezgene[gns$gene %in% genes_inter]))
+```
+
+In contrast, this is only about 20% in the intersecting genes.
+```{r}
+kegg <- readRDS(paste0("./data/kegg/kegg_", str_replace(species, " ", "_"), ".rds"))
+kegg_df <- read_csv(paste0("./data/kegg/kegg_df_", str_replace(species, " ", "_"), ".csv"))
+```
+
+```{r}
+all_entrez <- gns$entrezgene[gns$gene %in% genes_union]
+all_entrez <- all_entrez[!is.na(all_entrez)]
+gsa <- egsea_ora(kallisto_diff, species = "mouse", gns = gns, universe = all_entrez,
+                 gsets = kegg$kg.sets)
+egsea_results_df(gsa) %>% 
+  filter(p.adj < 0.05)
+```
+
+```{r}
+saveRDS(gsa, paste0("./output/", name_use, "/kallisto_only_gsea.rds"))
+```
+
+```{r}
+topSets(gsa)
+```
+
+# Seurat
+Here I first do the standard Seurat analysis (PCA, tSNE, clustering, DE) on results from the different methods separately. Next, I'll compare the cell type identities and marker genes for the corresponding clusters. Next, I'll merge the Seurat objects for differential expression between methods. Here, I'll only use the genes and barcodes shared between all methods for a fair comparison.
+
+```{r}
+mats_inter <- map(mats_filtered, ~ .x[genes_inter, bcs_inter])
+```
+
+```{r}
+seus <- imap(mats_inter,
+             ~ CreateSeuratObject(.x, project = .y) %>% 
+               NormalizeData(verbose = FALSE) %>% 
+               ScaleData(verbose = FALSE) %>% 
+               FindVariableFeatures(nfeatures = 3000, verbose = FALSE))
+```
+
+I can't use sctransform here since alevin results, as well as the non-single gene kallisto bus, will give fractional counts as UMIs are distributed across genes. 
+
+## QC
+```{r}
+# Gather all metadata for easier plotting
+metas <- map(seus, ~ .x@meta.data) %>% bind_rows()
+```
+
+Plot how number of genes relates to number of UMIs
+```{r gene_umi}
+ggplot(metas, aes(nCount_RNA, nFeature_RNA, color = orig.ident)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  scale_color_discrete(name = "method") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "nUMI", y = "nGene")
+```
+
+Good. These look very similar, except for the lower cluster for alevin. 
+
+See how many of the highly variable genes overlap
+```{r hvg_upset}
+hvg_list <- map(seus, ~ GetAssayData(.x, "var.features"))
+upset(fromList(hvg_list), order.by = "freq")
+```
+
+Good, the highly variable genes also mostly intersect, but we see that kallisto bus has some peculiarity compared to other methods.
+```{r hvg_jaccard}
+hvg_jaccard <- get_jaccard_matrix(hvg_list)
+```
+
+```{r}
+saveRDS(hvg_jaccard, paste0("./output/", name_use, "/hvg_jaccard.rds"))
+```
+
+Note that kallisto is the divergent one. Do the non-overlapping hvgs tend to have low counts? 
+```{r hvg_counts}
+# Find the hvgs in common
+hvg_inter <- reduce(hvg_list, intersect)
+hvg_union <- reduce(hvg_list, union)
+hvg_diff <- setdiff(hvg_union, hvg_inter)
+intersect_count_plot(hvg_inter, hvg_diff, filtered_rowsums)
+```
+
+```{r}
+entrez_inter <- gns$entrezgene[gns$gene %in% genes_inter]
+entrez_inter <- entrez_inter[!is.na(entrez_inter)]
+hvg_kd <- setdiff(hvg_list$kallisto, reduce(hvg_list[c("cellranger", "alevin", "star")], union))
+gsa_hvg <- egsea_ora(hvg_kd, "mouse", gns, universe = entrez_inter, gsets = kegg$kg.sets)
+egsea_results_df(gsa_hvg) %>% 
+  filter(p.adj < 0.05)
+```
+
+Nothing is statistically significant here.
+
+```{r}
+saveRDS(gsa_hvg, paste0("./output/", name_use, "/kallisto_only_hvg_gsea.rds"))
+saveRDS(entrez_inter, paste0("./output/", name_use, "/entrez_inter.rds"))
+```
+
+```{r}
+topSets(gsa_hvg)
+```
+
+## Dimension reduction
+```{r elbows}
+seus <- map(seus, RunPCA, npcs = 60, verbose = FALSE)
+elbows <- imap(seus, ~ ElbowPlot(.x, ndims = 60) + ggtitle(.y))
+grid.arrange(grobs = elbows, ncol = 2, nrow = 2)
+```
+
+Using 40 PCs sounds reasonable.
+```{r}
+seus <- map(seus, RunTSNE, dims = 1:40)
+```
+
+## Clustering
+```{r}
+seus <- map(seus, FindNeighbors, dims = 1:40, verbose = FALSE)
+seus <- map(seus, FindClusters, resolution = 1, algorithm = "Leiden",
+            verbose = FALSE)
+```
+
+How many clusters are there in each?
+```{r}
+(n_clusts <- map_dbl(seus, ~ length(unique(.x@meta.data$RNA_snn_res.1))))
+```
+
+```{r pca, fig.height=7, fig.width=7}
+DimPlot_list(seus, pt.size = 0.3)
+```
+
+Good, the overall structures look similar, though the particular cluster numbers are different.
+```{r tsne, fig.height=7, fig.width=7}
+DimPlot_list(seus, "tsne", pt.size = 0.3)
+```
+
+Overall, the structure looks very similar, though some parts are split differently. This leads to the problem of finding cell type specific effects of the different methods. Meanwhile, I begin to wonder what caused the different splits.
+
+```{r}
+# Save seurat objects
+saveRDS(seus, paste0("./output/", name_use, "/seurat.rds"))
+```
+
+```{r}
+sessionInfo()
+```

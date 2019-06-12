@@ -1,0 +1,172 @@
+---
+title: "DE between methods"
+author: "Lambda"
+date: "5/15/2019"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE}
+library(Seurat)
+library(tidyverse)
+theme_set(theme_bw())
+source("./code/plot_comparison.R")
+source("./code/gsea.R")
+source("./code/find_clust_mirror.R")
+name_use <- "neuron10k_v3"
+species <- "Mus musculus"
+seus <- readRDS(paste0("./output/", name_use, "/seurat.rds"))
+gns <- read_csv(paste0("./data/Ensembl/gns_", str_replace(species, " ", "_"), ".csv"))
+kegg <- readRDS(paste0("./data/kegg/kegg_", str_replace(species, " ", "_"), ".rds"))
+kegg_df <- read_csv(paste0("./data/kegg/kegg_df_", str_replace(species, " ", "_"), ".csv"))
+entrez_inter <- readRDS(paste0("./output/", name_use, "/entrez_inter.rds"))
+n_clusts <- map_dbl(seus, ~ length(unique(.x@meta.data$RNA_snn_res.1)))
+```
+
+How shall I do the differential expression? I can either do it pairwise or one method versus all others. Which way shall I go? Since what's of interest is how kallisto bus compares to other methods, I'll do differential expression of kallisto bus compared to each of the other 3 methods.
+
+# All clusters
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+method_markers <- map(seus[2:4], ~ methodDE(seus$kallisto, .x, test.use = "LR", 
+                                            latent.vars = "nCount_RNA", verbose = FALSE) %>% 
+                        filter(p_val_adj < 0.05))
+```
+
+See what genes are differentially "expressed"
+```{r}
+method_markers <- map(method_markers, left_join, y = gns, by = "gene")
+```
+
+Won't make volcano plots as the p-values are pretty much 0.
+
+Manual inspection reveals quite a few ribosomal genes, predicted genes, and housekeeping genes. I'm doing GSEA again to see what kinds of genes are overrepresented.
+
+```{r, results='hide'}
+method_gsea <- imap(method_markers, 
+                   ~ egsea_ora(.x$gene, "mouse", gns, entrez_inter, kegg$kg.sets,
+                               logFC = .x$avg_logFC) %>% 
+                     egsea_results_df() %>% 
+                     mutate(method = .y)) %>% 
+  bind_rows()
+```
+
+```{r}
+method_gsea %>% 
+  filter(p.adj < 0.05)
+```
+
+Ribosomal genes are overrepresented, as expected.
+```{r}
+saveRDS(method_gsea, paste0("./output/", name_use, "/method_gsea.rds"))
+```
+
+Another question: Do the DE genes here tend to have high or low counts?
+```{r method_de_counts}
+method_markers <- imap(method_markers, ~ mutate(.x, method = .y)) %>% 
+  bind_rows()
+method_de_genes <- unique(method_markers$gene)
+filtered_rowsums <- map(seus, ~ Matrix::rowSums(GetAssayData(.x, "counts")))
+genes_inter <- rownames(GetAssayData(seus$kallisto))
+intersect_count_plot(setdiff(genes_inter, method_de_genes), method_de_genes, filtered_rowsums) +
+  scale_x_discrete(labels = c("non-DE", "DE")) +
+  labs(y = "Total counts")
+```
+
+They don't necessarily have low counts.
+```{r}
+saveRDS(method_markers, paste0("./output/", name_use, "/method_markers.rds"))
+```
+
+Plot whether genes in each gene set tend to be enriched or depleted
+
+```{r method_nmarkers}
+gsea_logFC_bar(method_markers, kegg_df, method_gsea, species, ncol = 3, strip_position = "top")
+```
+
+Ricosomal genes are the most common among genes in enriched gene sets, and these genes tend to be depleted in kallisto (single gene). If we're not interested in studying expression of ribosomal genes, then this should be fine. About olfactory transduction, again, genes families are concerned, so I also suspect that UMI multimapping is the culprit here.
+
+# Cluster-wise
+In correlation bewteen the corresponding barcodes, we see that some clusters of cells have better correlation than others. 
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+method_cluster_markers <- map(seus[2:4],
+                              ~ methodDE_cluster(seus$kallisto, .x, test.use = "LR",
+                                            latent.vars = "nCount_RNA", verbose = FALSE) %>% 
+                                filter(p_val_adj < 0.05))
+```
+
+```{r}
+method_cluster_markers <- map(method_cluster_markers, left_join, y = gns, by = "gene")
+```
+
+First of all, check the number of "markers" for each cluster
+```{r}
+method_cluster_markers <- imap(method_cluster_markers, ~ mutate(.x, method = .y)) %>% 
+  bind_rows()
+method_cluster_markers <- method_cluster_markers %>% 
+  mutate(cluster = factor(cluster, levels = as.character(0:(n_clusts["kallisto"] - 1))))
+method_cluster_de_genes <- unique(method_cluster_markers$gene)
+```
+
+```{r method_markers_fc}
+method_cluster_markers %>% 
+  mutate(change = cut(avg_logFC, -3:4)) %>% 
+  ggplot(aes(cluster, fill = fct_rev(change))) +
+  geom_bar() +
+  facet_wrap(~ method, ncol = 1, strip.position = "right") +
+  scale_fill_viridis_d(option = "E", name = "logFC", direction = -1)
+```
+
+As expected, some clusters have more DE genes than others. The red blood cells really do have fewer DE genes. There's more depletion compared to alevin, as only alevin keeps multi-mapped reads. Are certain types of genes enriched?
+
+```{r, results='hide', message=FALSE}
+method_cluster_gsea <- cluster_wise_gsea(method_cluster_markers,
+                                         species = species, gns = gns, 
+                                         universe = entrez_inter,
+                                         gsets = kegg$kg.sets)
+```
+
+```{r}
+method_cluster_gsea %>% 
+  filter(p.adj < 0.05)
+```
+
+See which gene sets come up the most often:
+
+```{r method_bubble, fig.height=8, fig.width=8}
+gsea_bubble(method_cluster_markers, kegg_df, method_cluster_gsea, species, 4)
+```
+
+As expected, ribosom comes up the most often. There're 26 clusters from kallisto, which means ribosome came up for every single cluster. However, it's kind of disturbing that some gene sets that came up here are related to gene sets enriched when doing real GSEA within one method.
+
+```{r}
+saveRDS(method_cluster_markers, paste0("./output/", name_use, "/method_cluster_markers.rds"))
+saveRDS(method_cluster_gsea, paste0("./output/", name_use, "/method_cluster_gsea.rds"))
+```
+
+Also plot, across all clusters, whether genes in certain gene sets tend to be depleted or enriched in kallisto
+```{r method_cluster_n_markers, fig.height=8, fig.width=8}
+gsea_logFC_bar(method_cluster_markers, kegg_df, method_cluster_gsea, species, ncol = 1)
+```
+
+Again, ribosomal genes are the worst offender. Number 2 is again olfactory genes. 
+
+How about the general expression level of these genes compared to other genes?
+```{r method_cluster_counts}
+non_DE <- setdiff(genes_inter, method_cluster_markers$gene)
+intersect_count_plot(non_DE, method_cluster_de_genes, filtered_rowsums) +
+  scale_x_discrete(labels = c("non-DE", "DE")) +
+  labs(y = "Total counts")
+```
+
+Not much difference.
+
+```{r}
+sessionInfo()
+```

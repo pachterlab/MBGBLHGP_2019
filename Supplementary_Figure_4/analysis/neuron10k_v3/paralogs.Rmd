@@ -1,0 +1,147 @@
+---
+title: "Paralogs"
+author: "Lambda"
+date: "5/15/2019"
+output: 
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(scales)
+theme_set(theme_bw())
+source("./code/gsea.R")
+name_use <- "neuron10k_v3"
+species <- "Mus musculus"
+seus <- readRDS(paste0("./output/", name_use, "/seurat.rds"))
+cors_gene <- readRDS(paste0("./output/", name_use, "/cors_gene.rds"))
+method_markers <- readRDS(paste0("./output/", name_use, "/method_markers.rds"))
+method_de_genes <- unique(method_markers$gene)
+method_cluster_markers <- readRDS(paste0("./output/", name_use, "/method_cluster_markers.rds"))
+method_cluster_gsea <- readRDS(paste0("./output/", name_use, "/method_cluster_gsea.rds"))
+top_markers_inter <- readRDS(paste0("./output/", name_use, "/top_markers_inter.rds"))
+```
+
+Q: Are the differences between methods I saw related to number of paralogs? Do DE genes tend to have more paralogs? Genes with paralogs are more prone to multimapping UMIs due to homologous sequences.
+
+```{r}
+# Get paralog info
+paralog <- read_csv(paste0("./data/Ensembl/paralog_", str_replace(s, " ", "_"), ".csv"))
+```
+
+```{r}
+paralog_summary <- paralog %>% 
+  mutate(has_paralog = mmusculus_paralog_ensembl_gene != "") %>% 
+  group_by(has_paralog, ensembl_gene_id) %>% 
+  summarize(n_paralog = length(mmusculus_paralog_ensembl_gene)) %>% 
+  mutate(n_paralog = case_when(has_paralog ~ n_paralog,
+                               !has_paralog ~ 0L))
+```
+
+How many genes in our dataset have paralogs?
+
+```{r}
+genes_inter <- rownames(seus$kallisto)
+paralog_summary2 <- paralog_summary %>% 
+  filter(ensembl_gene_id %in% genes_inter)
+paralog_summary2 %>% 
+  dplyr::count(has_paralog)
+```
+
+That's more than half of the genes in our dataset. Among genes that have paralogs, how many paralogs do they have? Do DE genes between method tend to have more paralogs? I'm using the overall DE genes, not the cluster wise ones, since this is not a cluster wise comparison.
+```{r}
+paralog_summary2 <- paralog_summary2 %>% 
+  left_join(method_markers[,c(2,6,10)], by = c("ensembl_gene_id" = "gene")) %>% 
+  mutate(is_DE = !is.na(avg_logFC),
+         method = factor(replace_na(method, "not DE"), 
+                         levels = c("alevin", "cellranger", "star", "not DE")))
+```
+
+```{r}
+ggplot(paralog_summary2, aes(n_paralog, fill = is_DE)) +
+  geom_bar(aes(y = ..prop..), position = "dodge") +
+  labs(x = "Number of paralogs", y = "Proportion of genes")
+```
+
+This is hard to read for the few genes with lots of paralogs. Also look at ECDF, where I can plot DE genes for different methods.
+```{r}
+ggplot(paralog_summary2, aes(n_paralog, color = method)) +
+  stat_ecdf() +
+  labs(x = "Number of paralogs", y = "Cumulative probability") +
+  scale_color_manual(values = c(hue_pal()(3), "gray60"))
+```
+
+Maybe DE genes do tend to have more paralogs; in general, the ECDF of DE genes is slightly below that of non-DE genes.
+```{r}
+DE <- paralog_summary2$n_paralog[paralog_summary2$is_DE]
+not_DE <- paralog_summary2$n_paralog[!paralog_summary2$is_DE]
+ks.test(not_DE, DE, alternative = "greater")
+```
+
+CDF lying above means there're more small values, which means DE genes tend to have more paralogs than non-DE genes, though from the ECDF, it's just somewhat more. I know, Kolmogorov-Smirnov test is for continuous distributions, but since I have quite many different numbers of paralogs, I think I can sort of pretend that it's continuous. 
+
+Q: Are there top cluster marker genes that are also differntially "expressed" between methods?
+```{r}
+intersect(method_de_genes, top_markers_inter)
+```
+
+Do they tend to have lower logFC when comparing methods (not comparing clusters within methods)?
+```{r}
+ggplot(method_markers, aes(avg_logFC, ..density.., color = method)) +
+  geom_freqpoly(bins = 100) +
+  facet_wrap(~ gene %in% top_markers_inter, ncol = 1, strip.position = "right") +
+  labs(x = "Is real top marker")
+```
+
+Well, sort of, at least they're not extreme; all the logFC here arre less then 1. Do those genes tend to have worse correlation? Aren't they supposed to or they won't be DE?
+```{r}
+cors_gene <- cors_gene %>% 
+  mutate(gene = rep(top_markers_inter, 6)) %>% 
+  left_join(paralog_summary2[,c(2,3,6)], by = c("gene" = "ensembl_gene_id"))
+ggplot(cors_gene, aes(method, cor, color = is_DE)) +
+  geom_violin() +
+  geom_jitter(size = 0.5, alpha = 0.3, 
+              position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.9)) +
+  labs(x = "Correlation", y = "count",
+       title = "Correlation of marker genes") +
+  facet_wrap(~ corr_method, nrow = 1)
+```
+
+Yes, they do. Do top marker genes with more paralogs have worse correlation between kallisto and other methods?
+
+```{r}
+ggplot(cors_gene, aes(n_paralog, cor, color = is_DE)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "lm", size = 1, alpha = 0.2) +
+  facet_grid(corr_method ~ method)
+```
+
+So top marker genes with more paralogs don't really have worse correlation between kallisto and other methods. Then there must be something about those DE genes besides paralogs.
+
+Which kegg gene set has genes with the most paralogs? Here I'll only plot the enriched gene sets in cluster wise method DE genes, as this encompasses all enriched gene sets in overall method DE genes. Here I only plot DE genes.
+
+```{r, fig.height=7, fig.width=8}
+method_cluster_paralog <- method_cluster_markers %>% 
+  df4gsea_plot(kegg_df, method_cluster_gsea, species) %>% 
+  left_join(paralog_summary, by = c("gene" = "ensembl_gene_id"))
+ns <- sort(unique(method_cluster_paralog$n_paralog), decreasing = TRUE)
+pal <- viridis(max(ns + 1), option = "E")[ns + 1]
+ggplot(method_cluster_paralog, aes(fct_reorder(gene_set, gene_set, length, .desc = TRUE), 
+             fill = fct_rev(factor(n_paralog)))) +
+  geom_bar() +
+  scale_fill_manual(values = pal, name = "n paralog") +
+  facet_wrap(~ method, ncol = 1, strip.position = "right") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+  labs(y = "Number of genes", x = "gene set")
+```
+
+As expected, olfactory transduction genes have the most paralogs. Though ribosomal genes shown here don't have many paralogs, there're pseudogenes from duplication of those genes.
+
+```{r}
+sessionInfo()
+```

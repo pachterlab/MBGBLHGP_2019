@@ -1,0 +1,724 @@
+---
+title: "hgmm1k v3 single gene benchmark"
+author: "Lambda"
+date: "3/14/2019"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Pall wrote a new version of bustools that only keeps UMIs mapped to one gene, so no splitting. See if this remedies the read count and ribosomal gene problem.
+
+## Map transcripts to genes
+```{r}
+library(BUSpaRse)
+library(dplyr)
+library(stringr)
+library(data.table)
+library(Matrix)
+library(DropletUtils)
+library(VennDiagram)
+library(grid)
+library(ggplot2)
+library(GGally)
+library(plotly)
+library(purrr)
+library(viridis)
+library(tidyr)
+library(zeallot)
+library(Seurat)
+library(EnhancedVolcano)
+library(biomaRt)
+source('./code/read_count_output.R')
+source("./code/assign_species.R")
+theme_set(theme_bw())
+```
+
+```{r}
+tr2g <- tr2g_gtf("/home/single_cell_analysis/reference/refdata-cellranger-hg19-and-mm10-3.0.0/genes/genes.gtf", type_use = "transcript", transcript_version = NULL, gene_version = NULL)
+```
+
+```{r}
+# Reformat gene name
+tr2g <- tr2g %>% 
+  mutate(gene_name = str_remove(gene_name, "(hg19_)|(mm10_)"))
+```
+
+```{r}
+head(tr2g)
+```
+
+Since in the kallisto output, the `transcrripts.txt` file has the hg19_ and mm10_ in it, and does not have version numbers, I kept the hg19_ and mm10_ and did not include the version numbers
+That's a format my package doesn't process
+```{r, eval=FALSE}
+fwrite(tr2g[,2:1], file = "./output/hgmm_tr2g.tsv", sep = "\t", col.names = FALSE)
+```
+
+## Get counts
+```{bash}
+bustools count
+```
+
+```{bash}
+mkdir ./bus_output/hgmm1k_v3/single_gene
+```
+
+```{bash}
+# gene count
+/home/software/bustools_single_gene/single_gene/src/bustools count --genecounts \
+--output ./bus_output/hgmm1k_v3/single_gene/gene_count \
+--ecmap ./bus_output/hgmm1k_v3/matrix.ec \
+--txnames ./bus_output/hgmm1k_v3/transcripts.txt \
+--genemap ./output/hgmm_tr2g.tsv \
+./bus_output/hgmm1k_v3/bc_corrected.sorted
+```
+
+## bustools output
+
+```{r}
+gene_count <- read_count_output("../kallisto_out_single/kallisto_hgmm10k_v3", "genes",
+                                tcc = FALSE)
+```
+
+```{r}
+dim(gene_count)
+```
+This matrix needs filtering.
+
+## Compare barcodes
+First we compare barcodes, see how many barcodes, after error correction, overlap with those from cell ranger
+
+```{r}
+cr_full <- read_cellranger("../cellranger_out/cellranger3_hgmm10k_v3_out/outs/raw_feature_bc_matrix")
+```
+
+```{r}
+cr_filtered <- read_cellranger("../cellranger_out/cellranger3_hgmm10k_v3_out/outs/filtered_feature_bc_matrix")
+```
+
+```{r}
+cr_filtered_bc <- colnames(cr_filtered) %>% str_remove("-1")
+cr_full_bc <- colnames(cr_full) %>% str_remove("-1")
+colnames(cr_filtered) <- cr_filtered_bc
+colnames(cr_full) <- cr_full_bc
+```
+
+```{r, fig.width=4, fig.height=4, fig.align="center"}
+grid.newpage()
+p <- venn.diagram(list(bus = colnames(gene_count),
+                  CellRanger = cr_full_bc), fill = c("blue", "red"),
+             filename = NULL)
+grid.draw(p)
+```
+
+So before filtering, all barcodes from kallisto bus is present in CellRanger results. All barcodes on the whitelist are present in the full CellRanger matrix. This is just to check that the whitelist functionality of bustools count is working.
+
+## Compare filtering
+```{r}
+# Filter
+bc_rank <- barcodeRanks(gene_count)
+bc_rank_cr <- barcodeRanks(cr_full)
+```
+
+```{r}
+knee_plt <- list(bus = tibble(rank = bc_rank$rank,
+                              total = bc_rank$total,
+                              method = "kallisto_bus"),
+                 cr = tibble(rank = bc_rank_cr$rank,
+                             total = bc_rank_cr$total,
+                             method = "CellRanger")) %>% 
+  bind_rows() %>% 
+  distinct()
+```
+
+```{r}
+ggplot(knee_plt, aes(rank, total, color = method)) +
+  geom_line() +
+  geom_hline(yintercept = bc_rank$knee, color = "blue", linetype = 2) +
+  geom_hline(yintercept = bc_rank$inflection, color = "green", linetype = 2) +
+  geom_vline(xintercept = ncol(cr_filtered), color = "purple", linetype = 2) +
+  annotate("text", x = 1000, y = 1.5 * c(bc_rank$knee, bc_rank$inflection),
+           label = c("bus knee", "bus inflection"), color = c("blue", "green")) +
+  annotate("text", x = ncol(cr_filtered), y = 10 * bc_rank$inflection,
+           label = "CellRanger threshold", color = "purple") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "Rank", y = "Total reads")
+```
+
+In single gene mode, the knee plots are even closer.
+
+```{r}
+tot_count <- Matrix::colSums(gene_count)
+gc_filtered <- gene_count[, tot_count > bc_rank$inflection]
+```
+
+Now see how well the barcodes overlap in the filtered matrix.
+```{r, fig.height=4, fig.width=4, fig.align="center"}
+grid.newpage()
+p <- venn.diagram(list(bus = colnames(gc_filtered),
+                       CellRanger = cr_filtered_bc),
+                  fill = c("blue", "red"),
+                  filename = NULL)
+grid.draw(p)
+```
+
+That still is almost perfect.
+
+## Compare genes
+The filtering only filters cells, not genes. Here I'll also remove low count genes -- any gene to be kept must be detected in more than 3 cells.
+
+```{r}
+gc_filtered <- gc_filtered[Matrix::rowSums(gc_filtered) > 0,]
+cr_filtered <- cr_filtered[Matrix::rowSums(cr_filtered) > 0,]
+```
+
+See how many remaining genes are in common
+```{r, fig.height=4, fig.width=4, fig.align="center"}
+# after removing low count genes
+grid.newpage()
+p <- venn.diagram(list(bus = rownames(gc_filtered),
+                       CellRanger = rownames(cr_filtered)),
+                  fill = c("blue", "red"),
+                  filename = NULL)
+grid.draw(p)
+```
+
+There're more genes kept in kallisto bus. Are those also low count in kallisto bus?
+```{r}
+bus_only_genes <- setdiff(rownames(gc_filtered), rownames(cr_filtered))
+summary(Matrix::rowSums(gc_filtered[bus_only_genes,]))
+```
+
+So while most of them are low count, not all of them are. Contrast this to the genes in common
+```{r}
+genes_inter <- intersect(rownames(gc_filtered), rownames(cr_filtered))
+summary(Matrix::rowSums(gc_filtered[genes_inter,]))
+```
+
+```{r}
+summary(Matrix::rowSums(cr_filtered[genes_inter,]))
+```
+
+So yes, the genes specific to kallisto bus do tend to be less expressed.
+
+## Compare species separation
+```{r}
+bcs_inter <- intersect(colnames(gc_filtered), colnames(cr_filtered))
+genes_inter <- intersect(rownames(gc_filtered), rownames(cr_filtered))
+gc_filtered <- gc_filtered[genes_inter, bcs_inter]
+cr_filtered <- cr_filtered[genes_inter, bcs_inter]
+```
+
+```{r}
+cell_species <- assign_species(gc_filtered)
+```
+
+```{r}
+ggplot(cell_species, aes(n_human_umi, n_mouse_umi, color = species)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  ggtitle("kallisto")
+```
+
+```{r}
+cell_species %>% 
+  group_by(species) %>% 
+  dplyr::count() %>% 
+  mutate(proportion = n / ncol(gc_filtered))
+```
+
+This dataset is so clean! Exactly 1 doublet!
+
+Let's see the CellRanger matrix
+```{r}
+cell_species_cr <- assign_species(cr_filtered)
+```
+
+```{r}
+ggplot(cell_species_cr, aes(n_human_umi, n_mouse_umi, color = species)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  ggtitle("CellRanger")
+```
+
+```{r}
+cell_species_cr %>% 
+  group_by(species) %>% 
+  dplyr::count() %>% 
+  mutate(proportion = n / ncol(gc_filtered))
+```
+
+```{r}
+cell_species$method <- "kallisto"
+cell_species_cr$method <- "cellranger"
+cell_species <- bind_rows(cell_species, cell_species_cr)
+saveRDS(cell_species, file = "./output/hgmm10k_v3/cell_species.rds")
+```
+
+The overall shape of the plot seems quite similar. CellRanger did not remove some low count cells that I removed. Let me see how the species assignment from kallisto bus compares with that from CellRanger.
+
+```{r}
+cell_species_compare <- cell_species %>% 
+  inner_join(cell_species_cr, by = "barcode")
+which_bus <- which(str_detect(names(cell_species_compare), ".x$"))
+bus_vars <- names(cell_species_compare)[which_bus]
+cr_vars <- names(cell_species_compare)[-c(1, which_bus)]
+```
+
+```{r}
+saveRDS(cell_species_compare, file = "./output/hgmm10k_v3/cell_species_compare.rds")
+```
+
+This will compare proportion and number of UMIs from humans and mouse, as well as doublets. First see the number of UMIs.
+
+```{r, fig.width=7.5, fig.height=6}
+ggduo(cell_species_compare, mapping = aes(color = species.x),
+      bus_vars[1:3], cr_vars[1:3],
+      types = list(continuous = wrap("points", size = 0.5, alpha = 0.5)),
+      xlab = "kallisto bus", ylab = "CellRanger",
+      progress = FALSE, legend = c(2,3)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+```
+
+This time things are pretty much on y = x, though for mouse UMIs. It seems that the problem that kallisto bus has more read counts may have something to do with splitting reads to multiple genes.
+
+Here's a plot to show that more clearly
+```{r}
+ggplot(cell_species_compare, aes(tot_umi.x, tot_umi.y, color = species.x)) +
+  geom_point(size = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red", size = 0.3) +
+  annotate("text", x = 75000, y = 1e5, label = "y = x", color = "red") +
+  labs(x = "kallisto", y = "CellRanger", title = "Total counts per barcode") +
+  coord_equal()
+```
+
+So we do see that kallisto bus gives more total counts than CellRanger for the same barcodes, and human cells here tend to have more UMIs than mouse cells.
+
+```{r}
+cell_species_compare %>% 
+  group_by(species.x, species.y) %>% 
+  dplyr::count() %>% 
+  ungroup() %>% 
+  complete(species.x, species.y, fill = list(n = 0)) %>% 
+  ggplot(aes(species.x, species.y)) +
+  geom_tile(aes(fill = n)) +
+  geom_text(aes(label = n), color = "gray60") +
+  scale_fill_viridis_c(name = "number of \ncells") +
+  coord_equal() +
+  scale_x_discrete(expand = c(0,0)) +
+  scale_y_discrete(expand = c(0,0)) +
+  theme(panel.grid = element_blank()) +
+  labs(x = "kallisto", y = "CellRanger")
+```
+
+Now compare the proportions
+```{r, fig.width=6, fig.height=6}
+ggduo(cell_species_compare,
+      bus_vars[4:6], cr_vars[4:6],
+      types = list(continuous = wrap("points", size = 0.5, alpha = 0.5),
+                   comboHorizontal = wrap("box_no_facet", outlier.size = 0.5),
+                   comboVertical = wrap("box_no_facet", outlier.size = 0.5)),
+      xlab = "kallisto bus", ylab = "CellRanger",
+      progress = FALSE)
+```
+
+The proportions pretty much lies on y = x. Good, again, this shows that kallisto bus and CellRanger mostly agree on species assignment.
+
+Now let's do data integration and see if the differences in computational method overwhelms biological differences.
+
+```{r}
+cell_species_full_kb <- assign_species(gene_count)
+cell_species_full_cr <- assign_species(cr_full)
+cell_species_full_kb$method <- "kallisto"
+cell_species_full_cr$method <- "cellranger"
+cell_species_full <- bind_rows(cell_species_full_kb, cell_species_full_cr)
+cell_species_compare_full <- cell_species_full_kb %>% 
+  inner_join(cell_species_full_cr, by = "barcode")
+```
+
+```{r, fig.width=8, fig.height=8}
+fig6a <- ggplot(cell_species_full, aes(n_human_umi, n_mouse_umi, color = species)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  facet_wrap(~ method, ncol = 2) +
+  labs(x = "Number of human UMIs", y = "Number of mouse UMIs")
+fig6b <- ggplot(cell_species_compare_full, aes(tot_umi.x, tot_umi.y)) +
+  geom_point(size = 0.5, alpha = 0.3) +
+  geom_abline(slope = 1, intercept = 0, color = "red", size = 0.3) +
+  #annotate("text", x = 3e4, y = 1e5, label = "y = x", color = "red") +
+  labs(x = "kallisto", y = "CellRanger", title = "Total counts per barcode") +
+  coord_equal() +
+  scale_x_log10() +
+  scale_y_log10()
+fig6c <- ggplot(cell_species_compare_full, aes(prop_human.x, prop_human.y)) +
+  geom_point(size = 0.5, alpha = 0.3) +
+  labs(x = "kallisto", y = "CellRanger", title = "Proportion of human UMIs") +
+  coord_equal() +
+  geom_abline(slope = 1, intercept = 0, color = "red", size = 0.3)# +
+  #annotate("text", x = 0.3, y = 0.6, label = "y = x", color = "red")
+ggarrange(fig6a,
+          ggarrange(fig6b, fig6c, nrow = 1, ncol = 2, labels = c("B", "C")),
+          nrow = 2, ncol = 1,
+          labels = "A")
+```
+
+```{r}
+alpha_power_trans <- function(power = 0.61) {
+  scales::trans_new("alpha_power", function(x) x^power,
+                                 inverse = function(x) x^power)
+}
+```
+
+```{r}
+cell_species_compare_full$avg_counts <- (Matrix::colSums(gene_count[,cell_species_compare_full$barcode]) +
+                      Matrix::colSums(cr_full[,cell_species_compare_full$barcode])) / 2
+ggplot(cell_species_compare_full, aes(prop_human.x, prop_human.y, 
+                                      alpha = avg_counts)) +
+  geom_point(size = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red", size = 0.3) +
+  labs(x = "kallisto", y = "CellRanger", title = "Proportion of human UMIs") +
+  coord_equal() +
+  scale_alpha_continuous(range = c(1.925e-3, 1))
+```
+
+```{r}
+saveRDS(cell_species_full, "./output/hgmm10k_v3/cell_species_full.rds")
+saveRDS(cell_species_compare_full, "./output/hgmm10k_v3/cell_species_compare_full.rds")
+```
+
+## Correlation
+See whether data for the same cells correlate
+```{r}
+genes_inter <- intersect(rownames(gc_filtered), rownames(cr_filtered))
+bcs_inter <- intersect(colnames(gc_filtered), colnames(cr_filtered))
+```
+
+```{r}
+gc_inter <- as.matrix(gc_filtered[genes_inter, bcs_inter])
+cr_inter <- as.matrix(cr_filtered[genes_inter, bcs_inter])
+```
+
+```{r}
+# make sure that genes and barcodes are in the same order
+all.equal(dimnames(gc_inter), dimnames(cr_inter))
+```
+
+Here I take the diagonal of the correlation matrix since the diagonal represents correlation between barcodes in kallisto bus and their counter parts in CellRanger.
+```{r}
+# If the same barcode correlate
+gc_cr_cor <- map_dbl(seq_len(ncol(gc_inter)), ~ cor(gc_inter[,.x], cr_inter[,.x]))
+species_inter <- cell_species$species[match(bcs_inter, cell_species$barcode)]
+cor_species <- tibble(corr = gc_cr_cor,
+                      species = species_inter)
+```
+
+```{r}
+ggplot(cor_species, aes(corr, fill = species)) +
+  geom_histogram(bins = 100) +
+  labs(x = "Pearson correlation", 
+       title = "Correlation between kallisto and CellRanger for barcodes")
+```
+
+```{r}
+summary(gc_cr_cor)
+```
+
+With single gene, the correlation also improved for mouse cells. Still wondering why the correlation for human cells is bimodal.
+
+## Dimension reduction
+First of all, make the barcodes distinct to mark the computational method. Also, I'll only use intersecting genes since otherwise I can't concatenate the matrices.
+
+```{r}
+gc_inter <- as(gc_inter, "dgCMatrix")
+cr_inter <- as(cr_inter, "dgCMatrix")
+colnames(gc_inter) <- paste(colnames(gc_inter), "kb", sep = "_")
+colnames(cr_inter) <- paste(colnames(cr_inter), "cr", sep = "_")
+```
+
+```{r}
+seu <- CreateSeuratObject(cbind(gc_inter, cr_inter)) %>% 
+  NormalizeData() %>% 
+  ScaleData()
+```
+
+```{r}
+# Add metadata
+seu@meta.data$method <- c(rep("kallisto_bus", ncol(gc_inter)),
+                          rep("CellRanger", ncol(cr_inter)))
+# Add species, assigned from corresponding datasets
+seu@meta.data$species <- c(cell_species$species[match(bcs_inter, cell_species$barcode)],
+                           cell_species_cr$species[match(bcs_inter,
+                                                         cell_species_cr$barcode)])
+```
+
+```{r}
+VlnPlot(seu, c("nGene", "nUMI"), point.size.use = 0.1, group.by = "method")
+```
+
+Here kallisto output does tend to have more genes detected than CellRanger, but single gene seems to have solved the problem of getting more UMIs. 
+
+```{r}
+VlnPlot(seu, c("nGene", "nUMI"), point.size.use = 0.1, group.by = "species")
+```
+
+Human cells tend to have more genes and UMIs than mouse cells.
+
+```{r}
+seu <- FindVariableGenes(seu, y.cutoff = 0.5)
+```
+
+```{r}
+length(seu@var.genes)
+```
+
+```{r}
+seu <- RunPCA(seu, pcs.compute = 30, do.print = FALSE)
+PCElbowPlot(seu, num.pc = 30)
+```
+
+```{r}
+PCAPlot(seu, pt.shape = "species", group.by = "method")
+```
+
+Kind of hard to discern the shape of points. The two clusters on the right are human cells, and the two clusters on the left are mouse cells. PC1 is for species, which is good, but as soon as PC2 gets to different methods.
+
+Here we do see similar structure in both methods. Is that because of different number of genes between kallisto and CellRanger outputs?
+```{r}
+FeaturePlot(seu, "nGene", cols.use = viridis(256), pt.size = 0.5, 
+            reduction.use = "pca")
+```
+
+Where do corresponding cells end up here?
+```{r}
+pca_plt <- tibble(PC1 = seu@dr$pca@cell.embeddings[,1],
+                  PC2 = seu@dr$pca@cell.embeddings[,2],
+                  species = seu@meta.data$species,
+                  method = seu@meta.data$method,
+                  barcode = colnames(seu@data)) %>% 
+  mutate(barcode = str_remove(barcode, "(_kb)|(_cr)"))
+c(kb_pca, cr_pca) %<-% (pca_plt %>% 
+                          select(-species) %>% 
+                          split(pca_plt$method))
+pca_seg <- kb_pca %>% 
+  full_join(cr_pca, by = "barcode")
+ggplot(pca_plt) +
+  geom_point(aes(PC1, PC2, color = method, shape = species), 
+             alpha = 0.5) +
+  geom_segment(data = pca_seg, 
+               aes(x = PC1.x, y = PC2.x, xend = PC1.y, yend = PC2.y),
+               size = 0.3, alpha = 0.1, color = "blue") +
+  scale_shape_manual(values = c(16, 5, 8))
+```
+
+So it looks like by and large, in the first 2 PCs, the effects of the different methods moved the points parallelly. For each species, perhaps the difference is caused mostly by a translation, though that translation is different for each species. This time, with single gene, the two methods look a lot more similar on the first 2 PCs. PC2 still sort of separate human cells across the methods.
+
+How about other PCs?
+```{r}
+PCAPlot(seu, pt.shape = "species", group.by = "method", dim.1 = 3, dim.2 = 4)
+```
+
+PC3 and PC4 separate mouse cells.
+
+```{r}
+PCAPlot(seu, pt.shape = "species", group.by = "method", dim.1 = 5, dim.2 = 6)
+```
+
+In the later PCs, the effect of different methods is fading away, but some effect can still be seen.
+
+Not really. Which genes are responsible for separating the two methods in PC2 and PC3?
+```{r, fig.height=8, fig.width=8}
+VizPCA(seu, pcs.use = 2:4)
+```
+
+PC2 and PC3 also have just a few genes a lot more responsible for the differences than other genes.
+```{r}
+(top_method_genes <- PCTopGenes(seu, pc.use = 2:4, num.genes = 12))
+```
+
+Fortunately I still have the tr2g thing here
+```{r}
+mart <- useMart("ensembl", "hsapiens_gene_ensembl")
+mart2 <- useMart("ensembl", "mmusculus_gene_ensembl")
+gns_hs <- getBM(c("external_gene_name", "description"), mart = mart)
+gns_mm <- getBM(c("external_gene_name", "description"), mart = mart2)
+gns <- rbind(gns_hs, gns_mm)
+```
+
+```{r}
+names(gns)[1] <- "gene_name"
+```
+
+```{r}
+(tr2g_top <- tr2g %>% 
+  dplyr::select(-transcript) %>% 
+  distinct() %>% 
+  filter(gene %in% top_method_genes) %>% 
+  left_join(gns, by = "gene_name"))
+```
+
+It seems that many of them are either ribosomal genes or predicted genes.
+```{r}
+mean(str_detect(tr2g_top$description, regex("ribo", ignore_case = TRUE)), 
+     na.rm = TRUE)
+```
+Again, there're many ribosomal genes and single gene mode did not fully solve the ribosomal gene problem.
+
+## Differential expression
+```{r}
+seu <- RunTSNE(seu, dims.use = 1:20)
+TSNEPlot(seu, pt.size = 0.5, group.by = "method")
+```
+
+```{r}
+TSNEPlot(seu, pt.size = 0.5, group.by = "species")
+```
+
+I really don't expect to see interesting clusters since this is just cell line.
+See which genes are the most differentially expressed across technologies. I'm not going to do differential expression across clusters since the top DE genes will be the ones differentiating between mouse and human. I should do that in a different dataset with only one species.
+```{r}
+seu <- SetAllIdent(seu, "method")
+markers_method <- FindMarkers(seu, "kallisto_bus")
+markers_method$gene <- rownames(markers_method)
+```
+
+```{r}
+# Get gene names
+markers_method <- markers_method %>% 
+  left_join(tr2g, by = "gene")
+```
+
+```{r}
+markers_method %>% 
+  filter(p_val_adj < 0.05, abs(avg_logFC) > 1.5) %>% 
+  arrange(desc(abs(avg_logFC)), p_val_adj)
+```
+
+Again, a lot of ribosomal genes. 
+
+```{r, fig.height=6, fig.width=6}
+# Both human and mouse cells
+EnhancedVolcano(markers_method, lab = markers_method$gene_name, 
+                x = "avg_logFC", y = "p_val_adj", FCcutoff = 1.5,
+                title = "Enriched genes in kallisto bus (hgmm)")
+```
+
+This time it's the other way found. CellRanger results are more enriched in many ribosomal genes.
+
+```{r}
+# Species specific DE genes
+seu <- SetAllIdent(seu, "species")
+seu_human <- SubsetData(seu, WhichCells(seu, "human"))
+seu_mouse <- SubsetData(seu, WhichCells(seu, "mouse"))
+```
+
+```{r}
+# Human specific DE genes due to method
+seu_human <- SetAllIdent(seu_human, "method")
+markers_hs <- FindMarkers(seu_human, "kallisto_bus")
+markers_hs$gene <- rownames(markers_hs)
+markers_hs <- markers_hs %>% 
+  left_join(tr2g, by = "gene")
+```
+
+```{r}
+markers_hs %>% 
+  filter(p_val_adj < 0.05, abs(avg_logFC) > 1.5) %>% 
+  arrange(desc(abs(avg_logFC)), p_val_adj)
+```
+
+Still, a lot of ribosomal genes. But I also got tubulin and ferritin heavy chain. FAM211A-AS1 codes for a small nucleolar RNA, which means it's still related to the ribosome. PHB is prohibitin. https://www.ncbi.nlm.nih.gov/gene/5245
+
+```{r, fig.height=6, fig.width=6}
+# Only human cells
+EnhancedVolcano(markers_hs, lab = markers_hs$gene_name, 
+                x = "avg_logFC", y = "p_val_adj", FCcutoff = 1,
+                title = "Enriched genes in kallisto bus (human cells)")
+```
+
+```{r}
+# Mouse specific DE genes due to method
+seu_mouse <- SetAllIdent(seu_mouse, "method")
+markers_mm <- FindMarkers(seu_mouse, "kallisto_bus")
+markers_mm$gene <- rownames(markers_mm)
+markers_mm <- markers_mm %>% 
+  left_join(tr2g, by = "gene")
+```
+
+```{r}
+markers_mm %>% 
+  filter(p_val_adj < 0.05, abs(avg_logFC) > 1.5) %>% 
+  arrange(desc(abs(avg_logFC)), p_val_adj)
+```
+
+Again, mostly ribosomal genes. Valentine said Gm42418 often indicates rRNA issues.
+
+```{r}
+markers_method %>% 
+  filter(gene_name == "Gm42418")
+```
+
+This time this gene is not statistically significant.
+
+```{r, fig.height=6, fig.width=6}
+# Only mouse cells
+EnhancedVolcano(markers_mm, lab = markers_mm$gene_name, 
+                x = "avg_logFC", y = "p_val_adj", FCcutoff = 1.5,
+                title = "Enriched genes in kallisto bus (mouse cells)")
+```
+
+Here the kallisto bus result is *deprived* of many ribosomal genes compared to CellRanger results. What's going on here? It must be that only keeping UMIs mapping to one gene excludes many reads from ribosomal genes, while CellRanger does not exclude those reads so harshly.
+
+## ECs for top DE genes
+Do the top DE genes tend to have many different ECs? Are the top DE genes more likely to be assigned to ECs mapped to many genes? This may help us to figure out what caused the differences between kallisto bus and CellRanger results.
+
+```{r}
+ec2g <- EC2gene(tr2g, kallisto_out_path = "./bus_output/hgmm1k_v3")
+```
+
+```{r}
+de_genes <- c(markers_hs$gene[markers_hs$p_val_adj < 0.05 & abs(markers_hs$avg_logFC) > 1],
+              markers_mm$gene[markers_mm$p_val_adj < 0.05 & abs(markers_mm$avg_logFC) > 1.5])
+```
+
+```{r}
+ec2g <- ec2g %>% 
+  mutate(ntx = map_int(EC, length),
+         ngene = map_int(gene, length),
+         nDE = map_int(gene, ~ length(intersect(de_genes, .x))))
+```
+
+Do ECs with top DE genes tend to have a lot of genes?
+```{r}
+ggplot(ec2g, aes(ngene, fill = nDE > 0)) +
+  geom_area(stat = "bin", bins = 250, position = "fill") +
+  labs(y = "proportion", x = "number of genes per EC",
+       title = "Proportion of ECs with at least 1 top DE gene") +
+  coord_cartesian(xlim = c(0, 1750))
+```
+
+In single gene mode, the top DE genes are even more likely to be excluded from ECs, even larger ECs. Here's a negative control
+```{r}
+fake_de <- sample(genes_inter, length(de_genes))
+ec2g <- ec2g %>% 
+  mutate(nFakeDE = map_int(gene, ~ length(intersect(fake_de, .x))))
+ggplot(ec2g, aes(ngene, fill = nFakeDE > 0)) +
+  geom_area(stat = "bin", bins = 250, position = "fill") +
+  labs(y = "proportion", x = "number of genes per EC",
+       title = "Proportion of ECs with at least 1 fake DE genes") +
+  coord_cartesian(xlim = c(0, 1750))
+```
+
+What these plots suggest is actually that in real data, the ECs with fewer genes tend NOT to have top DE genes. That may say something about those top DE genes. 
+
+```{r}
+ec2g_plt <- ec2g %>% 
+  dplyr::select(ngene, nDE, nFakeDE) %>% 
+  filter(nDE > 0 | nFakeDE > 0) %>% 
+  gather(key = "key", value = "n", nDE, nFakeDE)
+ggplot(ec2g_plt, aes(ngene, n, color = key)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "lm", size = 0.3, se = FALSE) +
+  labs(x = "Number of genes in EC")
+```
+
+Again, we see that the ECs tend to have *fewer* top DE genes compared to negative control. With the single gene mode, the differene is more stark. It means that having many reads from ribosomal genes is related to UMIs split across multiple genes. 

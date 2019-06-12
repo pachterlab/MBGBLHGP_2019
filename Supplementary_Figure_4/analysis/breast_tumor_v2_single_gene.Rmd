@@ -1,0 +1,1068 @@
+---
+title: "breast tumor v2 benchmark (single gene)"
+author: "Lambda"
+date: "`r Sys.Date()`"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      fig.align = "center")
+```
+
+```{r, message=FALSE}
+library(BUSpaRse)
+library(dplyr)
+library(stringr)
+library(data.table)
+library(Matrix)
+library(DropletUtils)
+library(grid)
+library(ggplot2)
+library(plotly)
+library(purrr)
+library(viridis)
+library(tidyr)
+library(Seurat)
+library(biomaRt)
+library(plotly)
+library(gridExtra)
+library(UpSetR)
+library(forcats)
+library(ggalluvial)
+library(EGSEA)
+library(OmicsMarkeR)
+library(gage)
+library(scales)
+library(SingleR)
+source('./code/read_count_output.R')
+source("./code/assign_species.R")
+source("./code/plot_comparison.R")
+source("./code/find_clust_mirror.R")
+source("./code/gsea.R")
+theme_set(theme_bw())
+name_regex <- "SRR8327928_v2"
+species <- "Homo sapiens"
+```
+
+This dataset is one of the two xenografts. This study used CellRanger 2.0.0, and the authors did not specify the version of Ensembl used for the reference, so I think they used the reference that came with CellRanger, which was version 84. Then I'm using version 84 here.
+
+# Load data
+```{r}
+mats <- read_all_mats(name_regex)
+```
+
+Check the dimensions of the matrices
+```{r}
+map(mats, dim)
+```
+
+Looks like Alevin removed some genes. CellRanger already has filtered matrix.
+
+```{r}
+cr_filtered <- read_cellranger(paste0(get_dir(name_regex, "../cellranger_out"),
+                                      "/outs/filtered_feature_bc_matrix"))
+```
+
+```{r}
+# Reformat cell barcodes
+cr_filtered_bc <- colnames(cr_filtered) %>% str_remove("-1")
+colnames(cr_filtered) <- cr_filtered_bc
+```
+
+```{r}
+dim(cr_filtered)
+```
+
+# Compare barcodes
+```{r barcode_upset}
+bc_list <- map(mats, colnames)
+upset(fromList(bc_list), order.by = "freq")
+```
+
+# Compare filtering
+```{r}
+# Compute barcode ranks
+bc_ranks <- map(mats, barcodeRanks, lower = 1000)
+```
+
+```{r knee}
+knee_plot(bc_ranks) +
+  geom_vline(xintercept = ncol(cr_filtered), size = 0.3, color = "blue") +
+  annotate("text", x = ncol(cr_filtered), y = 3e3, label = "CellRanger threshold",
+           color = "blue")
+```
+
+What's that step-like thing in alevin results? The flat part is because of different ranks associated with the same total count. The jump up is becuase of a jump in total count for similar ranks. This also happens to kallisto bus without single gene mode. Why does this happen? The smoother curves are when one total count corresponds to one rank. 
+
+```{r}
+# Filter barcodes 
+mats_filtered <- imap(mats, ~ .x[, Matrix::colSums(.x) > bc_ranks[[.y]]$inflection])
+mats_filtered$cellranger <- cr_filtered
+# Remove all 0 genes
+mats_filtered <- map(mats_filtered, ~ .x[Matrix::rowSums(.x) > 0, ])
+```
+
+```{r}
+map(mats_filtered, dim)
+```
+
+Now I no longer need the full matrices, so I'm removing them to save memory.
+```{r}
+rm(mats)
+gc(verbose = FALSE)
+```
+
+Now see how well the barcodes overlap in the filtered matrix.
+```{r barcode_upset_filtered}
+bc_list <- map(mats_filtered, colnames)
+upset(fromList(bc_list), order.by = "freq")
+```
+
+Good. The vast majority of barcodes do overlap.
+
+```{r barcode_jaccard}
+# Jaccard index 
+bc_jaccard <- get_jaccard_matrix(bc_list)
+```
+
+```{r}
+saveRDS(bc_jaccard, paste0("./output/", name_regex, "/bc_jaccard.rds"))
+```
+
+Do the non-overlapping barcodes tend to have low counts?
+```{r}
+bcs_inter <- reduce(bc_list, intersect)
+bcs_diff <- setdiff(reduce(bc_list, union), bcs_inter)
+filtered_colsums <- map(mats_filtered, Matrix::colSums)
+intersect_count_plot(bcs_inter, bcs_diff, filtered_colsums)
+```
+
+As expected, the non-intersecting barcoodes have low count compared to the intersecting barcodes.
+
+# Compare genes
+See how many remaining genes are in common
+```{r gene_upset}
+# after removing all 0 genes
+gene_list <- map(mats_filtered, rownames)
+upset(fromList(gene_list), order.by = "freq")
+```
+
+kallisto bus has the most genes, but the vasts majority of genes overlap.
+
+```{r gene_jaccard}
+gene_jaccard <- get_jaccard_matrix(gene_list)
+```
+
+```{r}
+saveRDS(gene_jaccard, paste0("./output/", name_regex, "/gene_jaccard.rds"))
+```
+
+Do the non-overlapping genes tend to have low counts? Gene set enrichment analysis of the non-overlapping genes
+
+```{r}
+genes_inter <- reduce(gene_list, intersect)
+genes_union <- reduce(gene_list, union)
+genes_diff <- setdiff(genes_union, genes_inter)
+filtered_rowsums <- map(mats_filtered, Matrix::rowSums)
+intersect_count_plot(genes_inter, genes_diff, filtered_rowsums)
+```
+
+So yes, the non-intersecting genes do tend to have low count (the y axis is on log scale).
+
+Here I do GSEA on the non-overlapping genes
+```{r}
+mart <- useEnsembl("ensembl", BUSpaRse:::species2dataset(species), version = 94)
+gns <- getBM(c("external_gene_name", "ensembl_gene_id", "description", "entrezgene"), mart = mart)
+names(gns)[1:2] <- c("gene_name", "gene")
+```
+
+```{r}
+kallisto_diff <- setdiff(gene_list$kallisto, reduce(gene_list[c("cellranger", "alevin", "star")], union))
+kd_entrez <- gns$entrezgene[gns$gene %in% kallisto_diff]
+mean(is.na(kd_entrez))
+```
+
+More than half of the genes peculiar to kallisto do not have an entrez ID.
+```{r}
+gns %>% 
+  filter(gene %in% kallisto_diff) %>% 
+  filter(is.na(entrezgene))
+```
+
+Those genes without entrez IDs here are all predicted genes, pseudogenes, or unannotated genes.
+
+```{r}
+mean(is.na(gns$entrezgene[gns$gene %in% genes_inter]))
+```
+
+In contrast, this is only about 20% in the intersecting genes.
+```{r}
+kegg <- kegg.gsets(species)
+# A data frame version of the kegg pathways
+kegg_df <- tibble(gene_set = names(kegg$kg.sets),
+                  entrezgene = unname(kegg$kg.sets)) %>% 
+  unnest()
+kegg_df <- kegg_df %>% 
+  mutate(entrezgene = as.integer(entrezgene))
+```
+
+```{r}
+all_entrez <- gns$entrezgene[gns$gene %in% genes_union]
+all_entrez <- all_entrez[!is.na(all_entrez)]
+gsa <- egsea_ora(kallisto_diff, species = "mouse", gns = gns, universe = all_entrez,
+                 gsets = kegg$kg.sets)
+egsea_results_df(gsa) %>% 
+  filter(p.adj < 0.05)
+```
+
+Not ribosome? But again, olfactory and taste transduction have a lot of paralogs, so the culprit is probably low sequence uniqueness again.
+
+```{r}
+saveRDS(gsa, paste0("./output/", name_regex, "/kallisto_only_gsea.rds"))
+```
+
+```{r}
+topSets(gsa)
+```
+
+# Seurat
+Here I first do the standard Seurat analysis (PCA, tSNE, clustering, DE) on results from the different methods separately. Next, I'll compare the cell type identities and marker genes for the corresponding clusters. Next, I'll merge the Seurat objects for differential expression between methods. Here, I'll only use the genes and barcodes shared between all methods for a fair comparison.
+
+```{r}
+mats_inter <- map(mats_filtered, ~ .x[genes_inter, bcs_inter])
+```
+
+```{r}
+seus <- imap(mats_inter,
+             ~ CreateSeuratObject(.x, project = .y) %>% 
+               NormalizeData(verbose = FALSE) %>% 
+               ScaleData(verbose = FALSE) %>% 
+               FindVariableFeatures(nfeatures = 3000, verbose = FALSE))
+```
+
+I can't use sctransform here since alevin results, as well as the non-single gene kallisto bus, will give fractional counts as UMIs are distributed across genes. 
+
+## QC
+```{r}
+# Gather all metadata for easier plotting
+metas <- map(seus, ~ .x@meta.data) %>% bind_rows()
+```
+
+Plot how number of genes relates to number of UMIs
+```{r gene_umi}
+ggplot(metas, aes(nCount_RNA, nFeature_RNA, color = orig.ident)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  scale_color_discrete(name = "method") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "nUMI", y = "nGene")
+```
+
+Good. These look very similar.
+
+See how many of the highly variable genes overlap
+```{r hvg_upset}
+hvg_list <- map(seus, ~ GetAssayData(.x, "var.features"))
+upset(fromList(hvg_list), order.by = "freq")
+```
+
+That's bad news
+
+```{r hvg_jaccard}
+hvg_jaccard <- get_jaccard_matrix(hvg_list)
+```
+
+```{r}
+saveRDS(hvg_jaccard, paste0("./output/", name_regex, "/hvg_jaccard.rds"))
+```
+
+Note that kallisto is the divergent one. Do the non-overlapping hvgs tend to have low counts? 
+```{r}
+# Find the hvgs in common
+hvg_inter <- reduce(hvg_list, intersect)
+hvg_union <- reduce(hvg_list, union)
+hvg_diff <- setdiff(hvg_union, hvg_inter)
+intersect_count_plot(hvg_inter, hvg_diff, filtered_rowsums)
+```
+
+```{r}
+entrez_inter <- gns$entrezgene[gns$gene %in% genes_inter]
+entrez_inter <- entrez_inter[!is.na(entrez_inter)]
+hvg_kd <- setdiff(hvg_list$kallisto, reduce(hvg_list[c("cellranger", "alevin", "star")], union))
+gsa_hvg <- egsea_ora(hvg_kd, "mouse", gns, universe = entrez_inter, gsets = kegg$kg.sets)
+egsea_results_df(gsa_hvg) %>% 
+  filter(p.adj < 0.05)
+```
+
+Nothing is statistically significant here.
+
+```{r}
+saveRDS(gsa_hvg, paste0("./output/", name_regex, "/kallisto_only_hvg_gsea.rds"))
+```
+
+```{r}
+topSets(gsa_hvg)
+```
+
+## Dimension reduction
+```{r elbows}
+seus <- map(seus, RunPCA, npcs = 60, verbose = FALSE)
+elbows <- imap(seus, ~ ElbowPlot(.x, ndims = 60) + ggtitle(.y))
+grid.arrange(grobs = elbows, ncol = 2, nrow = 2)
+```
+
+Using 40 PCs sounds reasonable.
+```{r}
+seus <- map(seus, RunTSNE, dims = 1:40)
+```
+
+## Clustering
+```{r}
+seus <- map(seus, FindNeighbors, dims = 1:40, verbose = FALSE)
+seus <- map(seus, FindClusters, resolution = 1, verbose = FALSE)
+```
+
+How many clusters are there in each?
+```{r}
+(n_clusts <- map_dbl(seus, ~ length(unique(.x@meta.data$RNA_snn_res.1))))
+```
+
+```{r pca, fig.height=7, fig.width=7}
+DimPlot_list(seus, pt.size = 0.3)
+```
+
+Good, the overall structures look similar, though the particular cluster numbers are different.
+```{r tsne, fig.height=7, fig.width=7}
+DimPlot_list(seus, "tsne", pt.size = 0.3)
+```
+
+Overall, the structure looks very similar, though some parts are split differently. This leads to the problem of finding cell type specific effects of the different methods. Meanwhile, I begin to wonder what caused the different splits.
+
+### Differential expression bewteen clusters
+```{r}
+markers <- map(seus, FindAllMarkers, test.use = "LR", 
+               min.pct = 0.25, latent.vars = "nCount_RNA", only.pos = TRUE)
+markers <- imap(markers, ~ mutate(.x, method = .y)) %>% 
+  bind_rows()
+```
+
+```{r}
+# Add gene description
+markers <- markers %>% 
+  left_join(gns, by = "gene")
+markers$cluster <- as.factor(markers$cluster)
+markers$cluster <- fct_relevel(markers$cluster, as.character(0:(max(n_clusts)-1)))
+# Only keep the significant markers
+markers <- markers %>% 
+  filter(p_val_adj < 0.05)
+```
+
+```{r}
+markers <- markers %>% 
+  group_by(method, cluster) %>% 
+  mutate(rank_logFC = dense_rank(-avg_logFC))
+```
+
+```{r}
+# Save results
+saveRDS(markers, paste0("./output/", name_regex, "/cluster_all4.rds"))
+```
+
+```{r}
+markers %>% 
+  filter(avg_logFC > 0.75) %>% 
+  group_by(method, cluster) %>% 
+  top_n(5, avg_logFC) %>% 
+  arrange(method, cluster, desc(avg_logFC))
+```
+
+See how many markers for each cluster. This should only show enriched genes.
+```{r n_markers, fig.width=10, fig.height=6}
+plot_n_markers(markers, 0.75, nudge_y = 2)
+```
+
+Cluster 7 must be really unique.
+
+Also, do smaller clusters tend to have larger logFC?
+```{r logFC, fig.width=10, fig.height=6}
+ggplot(markers, aes(cluster, avg_logFC)) +
+  geom_violin() +
+  geom_jitter(size = 0.1, alpha = 0.1) +
+  facet_wrap(~ method)
+```
+
+### GSEA
+Here I use GSEA on marker genes of each cluster to find the cell type of each cluster.
+```{r}
+markers_gsea <- markers %>% 
+  top_n(20, avg_logFC) %>% 
+  cluster_wise_gsea(species = species, gns = gns, 
+                    universe = entrez_inter,
+                    gsets = kegg$kg.sets)
+```
+
+See what pathways are enriched in each cluster
+```{r}
+markers_gsea %>% 
+  filter(p.adj < 0.05, method == "kallisto") %>% 
+  group_by(cluster) %>% 
+  top_n(10, -p.adj)
+```
+
+Even with this result, it's still hard to tell the cell type of each cluster. I'm also making a plot showing how many genes per enriched gene set and the p-value of the gene set.
+```{r, fig.height=10, fig.width=10}
+markers %>% 
+  top_n(20, avg_logFC) %>% 
+  gsea_bubble(kegg_df, markers_gsea, species, 4)
+```
+
+It's pretty apparent that cluster 10 is immune cells
+
+```{r}
+saveRDS(markers_gsea, paste0("./output/", name_regex, "/cluster_gsea.rds"))
+```
+
+### Cell type annotation
+```{r}
+data("blueprint_encode")
+```
+
+```{r}
+# Use Ensembl gene ID in reference
+encode_use <- blueprint_encode$data
+rownames(encode_use) <- gns$gene[match(rownames(encode_use), gns$gene_name)]
+encode_use <- encode_use[!is.na(rownames(encode_use)),]
+```
+
+```{r}
+foo <- SingleR("single", GetAssayData(subset(seus$kallisto, idents = "10")), 
+               ref_data = encode_use,
+               types = blueprint_encode$types)
+```
+
+```{r}
+SingleR.DrawHeatmap(foo, normalize = FALSE)
+```
+
+### Cluster membership
+I should compare overlap of enriched kegg pathways between methods. The goal of the comparison is to see whether clustering in these different methods pick up the same cell types. How shall I do this? First I should find which cluster in kallisto corresponds to which cluster in other methods, and then see how their enriched pathways overlap. So now I try to find which cluster corresponds to which and how good the correspondence is. 
+
+```{r}
+clusts <- map(seus, ~ .x@meta.data %>% 
+                mutate(barcode = rownames(.x@meta.data)) %>% 
+                dplyr::select(orig.ident, RNA_snn_res.1, barcode)) %>% 
+  bind_rows() %>% 
+  mutate(RNA_snn_res.1 = factor(RNA_snn_res.1, levels = as.character(0:(max(n_clusts) - 1))))
+clusts <- clusts %>% 
+  spread(orig.ident, RNA_snn_res.1)
+clusts_alluvial <- clusts %>% 
+  group_by_if(is.factor) %>% 
+  dplyr::count()
+```
+
+```{r}
+saveRDS(clusts, paste0("./output/", name_regex, "/clusters_all4.rds"))
+```
+
+First do a barplot to see where cells in kallisto clusters go
+```{r}
+clust_assign <- clusts %>% 
+  gather(key = "method", value = "cluster", -barcode, -kallisto) %>% 
+  mutate(cluster = factor(cluster, levels = as.character(0:(max(n_clusts) - 1))))
+p <- ggplot(clust_assign, aes(kallisto, fill = cluster)) +
+  facet_wrap(~ method, ncol = 1, strip.position = "right") +
+  scale_fill_viridis_d(option = "E")
+p + geom_bar(color = "gray", size = 0.1) +
+  labs(y = "Number of cells")
+```
+
+Plot the proportions to better see the small clusters
+```{r}
+p + geom_bar(position = "fill", color = "gray", size = 0.1) +
+  labs(y = "Proportion of cells")
+```
+
+Another way to visualize where the cells go is alluvial plot.
+```{r, fig.height=10, fig.width=10}
+ggplot(clusts_alluvial, aes(y = n, axis1 = kallisto, axis2 = alevin, axis3 = cellranger, axis4 = star)) +
+  geom_flow(aes(fill = kallisto, color = kallisto), size = 0.3) +
+  scale_x_discrete(limits = c("kallisto", "alevin", "cellranger", "star"), expand = c(0,0)) +
+  geom_stratum() +
+  geom_text(stat = "stratum", label.strata = TRUE) +
+  labs(y = "Number of cells") +
+  scale_fill_viridis_d(name = "kallisto cluster", option = "E") +
+  scale_color_viridis_d(name = "kallisto cluster", option = "E") +
+  scale_y_continuous(expand = c(0,0))
+```
+
+Bad news: Some clusters are totally split up and distributed into other clusters when the method is changed. I should also quantify concordance of clusters. I'll do it this way: First, I assign clusters based on which pairs of clusters (one of whom is from kallisto) have the most overlap. Then I use the number of cells in the cluster to calculate a Jaccard index.
+
+```{r}
+clust_n_cell <- clusts %>% 
+  gather(key = "method", value = "cluster", -barcode) %>% 
+  group_by(method, cluster) %>% 
+  nest(.key = "barcodes") %>% 
+  mutate(barcodes = map(barcodes, ~ .x$barcode))
+clust_assign_summary <- clust_assign %>% 
+  group_by(kallisto, method, cluster) %>% 
+  dplyr::count(name = "n_intersect") %>% 
+  left_join(clust_n_cell, by = c("method", "cluster")) %>% 
+  left_join(setNames(clust_n_cell[clust_n_cell$method == "kallisto", 2:3],
+                     c("cluster", "kallisto_bcs")),
+            by = c("kallisto" = "cluster")) %>% 
+  mutate(n_union = map2_int(barcodes, kallisto_bcs, ~ length(union(.x, .y))),
+         jaccard = n_intersect/n_union) %>% 
+  select_if(function(x) !is.list(x)) %>% 
+  ungroup() %>% 
+  mutate(kallisto = factor(kallisto, levels = as.character(0:(n_clusts["kallisto"] - 1))),
+         cluster = factor(cluster, levels = as.character(0:(max(n_clusts) - 1))))
+```
+
+Now I have the Jaccard indices between clusters, and can visualize it
+```{r}
+ggplot(clust_assign_summary, aes(cluster, kallisto, fill = jaccard)) +
+  geom_tile() +
+  scale_fill_viridis_c() +
+  facet_wrap(~ method, ncol = 2) +
+  coord_equal() +
+  theme(panel.background = element_rect(fill = viridis(256)[1]),
+        panel.grid = element_blank()) +
+  labs(y = "kallisto cluster")
+```
+
+Again, there's the problem of a cluster getting totally split up and scatter into several clusters in another method, which happens here in alevin. In that case, I won't be able to assign clusters nicely; perhaps I can use the cluster with the largest Jaccard index. Another complicated case is 50/50 splits or merging of two clusters into one. I think I'll do the cluster assignments this way: 
+```{r}
+top_clust_kallisto <- clust_assign_summary %>% 
+  group_by(kallisto, method) %>% 
+  top_n(1, jaccard) %>% 
+  dplyr::select(kallisto:cluster)
+top_clust <- clust_assign_summary %>% 
+  group_by(method, cluster) %>% 
+  top_n(1, jaccard) %>% 
+  dplyr::select(kallisto:cluster)
+clust_assign_final <- full_join(top_clust_kallisto, top_clust)
+```
+
+### Gene set overlap
+With the cluster assignments, I can compare the enriched pathways.
+```{r}
+kallisto_sets <- markers_gsea %>% 
+  filter(method == "kallisto") %>% 
+  dplyr::select(gene_set, cluster) %>% 
+  group_by(cluster) %>% 
+  nest(.key = "kallisto_gene_sets") %>% 
+  mutate(kallisto_gene_sets = map(kallisto_gene_sets, ~ .x$gene_set))
+markers_gsea_match <- markers_gsea %>% 
+  filter(method != "kallisto", p.adj < 0.05) %>% 
+  dplyr::select(gene_set, cluster, method) %>% 
+  group_by(cluster, method) %>% 
+  nest(.key = "gene_sets") %>% 
+  mutate(gene_sets = map(gene_sets, ~ .x$gene_set)) %>% 
+  left_join(clust_assign_final, by = c("method", "cluster")) %>% 
+  left_join(kallisto_sets, by = c("kallisto" = "cluster"))
+```
+
+Great, now I can see the intersection of enriched gene sets. An useful way is Jaccard index.
+```{r}
+markers_gsea_match <- markers_gsea_match %>% 
+  mutate(jaccard = map2_dbl(gene_sets, kallisto_gene_sets, jaccard))
+ggplot(markers_gsea_match, aes(method, jaccard)) +
+  geom_violin() +
+  geom_text(aes(label = kallisto), position = position_jitter(width = 0.4)) +
+  coord_flip()
+```
+
+The numbers are the assigned kallisto cluster. Regarding cluster 11: kallisto cluster 11 doesn't have any enriched gene sets among its marker genes, while the corresponding cluster in CellRanger and STAR do, so of course the Jaccard index is 0. Is that good news or bad news? In the vast majority of cases, the enriched gene sets of corresponding clusters do overlap. In some cases, though some gene sets don't overlap, they're related, so they won't seriously affect manual labeling of cell types. Without more sophisticated text mining, human inspection is needed to identify such cases. Low Jaccard index can be causesd by different sizes of the two sets of interest. In some cases, alevin finds more gene sets than kalisto.
+
+```{r}
+# Save results
+saveRDS(clust_assign_final, paste0("./output/", name_regex, "/cluster_assignment.rds"))
+saveRDS(clust_assign_summary, paste0("./output/", name_regex, "/clust_assign_summary.rds"))
+saveRDS(markers_gsea_match, paste0("./output/", name_regex, "/markers_gsea_match.rds"))
+```
+
+## Marker genes
+How well do the marker genes compare?
+```{r markers_upset}
+markers_list <- split(markers$gene, markers$method)
+upset(fromList(markers_list), order.by = "freq")
+```
+
+They overlap very well, but again, kallisto is the one with the most peculiar genes. What are those peculiar genes?
+```{r}
+kallisto_only <- setdiff(markers_list$kallisto, reduce(markers_list[c("cellranger", "alevin", "star")], union))
+markers %>% 
+  filter(gene %in% kallisto_only)
+```
+
+A whole bunch of predicted genes and housekeeping genes again. Are they generally low rank?
+```{r}
+summary(markers$rank_logFC[markers$gene %in% kallisto_only])
+```
+
+So yes, they're usually low rank, which means it's not really that big a deal. How about the top markers for each cluster?
+```{r}
+topn <- 15
+top_markers_list <- markers %>% 
+  filter(rank_logFC <= topn, avg_logFC > 0.75)
+top_markers_list <- split(top_markers_list$gene, top_markers_list$method)
+upset(fromList(top_markers_list), order.by = "freq")
+```
+
+Again, the intersection is pretty good, but here the pseudoalignment methods (alevin and kallisto) tend to have more non-overlapping genes. 
+
+```{r}
+markersdf_list <- markers %>% 
+  dplyr::select(avg_logFC, p_val_adj:rank_logFC) %>% 
+  group_by(method) %>% 
+  group_split()
+names(markersdf_list) <- map_chr(markersdf_list, ~ unique(.x$method))
+markers_inter <- map(markersdf_list, ~ inner_join(.x, markersdf_list$kallisto, 
+                                          by = c("gene", "gene_name", "description"))) %>% 
+  bind_rows()
+```
+
+I'll plot pairwise comparison of marker gene overlap in clusters. Pairwise means the columns are for clusters from method x and they're colored by marker genes from cluster y.
+
+Here I'm making a plot showing the proportion of top n genes in cluster.x that are also top n genes in some cluster.y. 
+```{r marker_overlap}
+markers_inter %>% 
+  filter(rank_logFC.x < 15, rank_logFC.y < 15, avg_logFC.x > 0.75, avg_logFC.y > 0.75) %>% 
+ggplot(aes(cluster.y, fill = cluster.x)) +
+  geom_bar(position = "fill", color = "gray", size = 0.2) +
+  scale_fill_viridis_d(option = "E", name = "cluster") +
+  labs(y = "Proportion of marker genes",
+       x = "kallisto cluster",
+       title = "Top 15 marker gene overlap in clusters") +
+  facet_wrap(~ method.x, ncol = 1, strip.position = "right")
+```
+
+What a piece of aRt! And I did this without writing a single loop. We also see some approximately 50/50 splits, indicating how marker genes of clusters overlap. We see that the patterns are quite similar between methods. Without using plotly, it will be hard to tell which color is which on the plot; this plot is only for qualitatively finding the top n rank that gives clean cluster correspondence between methods. 
+
+Another plot: how ranks in x relates to ranks in y
+```{r marker_ranks}
+topn <- 15
+# With all significant genes
+markers_inter %>% 
+  filter(rank_logFC.x <= topn, rank_logFC.y <= topn,
+         avg_logFC.x > 0.75, avg_logFC.y > 0.75) %>% 
+ggplot(aes(rank_logFC.x, rank_logFC.y)) +
+  geom_bin2d(bins = topn - 1) +
+  scale_fill_viridis_c() +
+  scale_x_continuous(breaks = 1:topn, expand = c(0.02, 0.02)) +
+  scale_y_continuous(breaks = 1:topn, expand = c(0.02, 0.02)) +
+  facet_wrap(~ method.x, ncol = 2) +
+  coord_equal() +
+  theme(panel.background = element_rect(fill = viridis(256)[1]),
+        panel.grid = element_blank())
+```
+
+Another piece of aRt. It's good to know that, at least the for higher ranked marker genes, the ranks match pretty well in all methods (see the highlighted diagonal), and the best concordance is in the number 1 marker genes. The diagonal fades away for genes with lower rank. But what does it mean to have 50 number 1 genes while there're only 26 or 27 clusters? The genes are actually duplicated. The same gene can have the same rank in multiple clusters. The same gene can also be a marker for multiple clusters, albeit with different ranks, and that's why there are off-diagonal entries when I plot the same method against itself.
+
+## Correlation
+### Of cells
+See how well do the cells correlate, if I only consider the overlapping marker genes with rank of at least 15 within the cluster and have logFC of at least 0.75. It's arbitrary, but when it comes to experimental decisions, the top marker genes are more likely to be considered. Also, only enriched genes are considered, since those are more likely to be experimentally manipulated.
+
+```{r}
+top_markers_inter <- reduce(top_markers_list, intersect)
+```
+
+Just to make sure that the top markers we're looking at are not low count genes.
+```{r}
+intersect_count_plot(top_markers_inter, setdiff(genes_inter, top_markers_inter),
+                     sums = filtered_rowsums) +
+  scale_x_discrete(labels = c("top markers", "other genes"))
+```
+
+Good, there aren't super low count genes among marker genes we're using. I'll only do correlation between kallisto and each of the other methods, as the purpose of this study is to benchmark kallisto.
+
+```{r}
+# Among all cells
+cor_use <- map(mats_inter, ~ as.matrix(.x[top_markers_inter, ]))
+cors_spearman <- map(cor_use[c("cellranger", "alevin", "star")],
+            function(m) {
+              map_dbl(bcs_inter, ~ cor(cor_use$kallisto[, .x], m[, .x], method = "spearman"))
+            }) %>% 
+  as_tibble()
+# Color by cluster in kallisto
+cors_spearman <- cors_spearman %>% 
+  mutate(clust_use = seus$kallisto$RNA_snn_res.1) %>% 
+  gather(key = "method", value = "spearman", -clust_use)
+ggplot(cors_spearman, aes(spearman, fill = clust_use)) +
+  geom_histogram(bins = 100) +
+  labs(x = "Spearman correlation", y = "count",
+       title = "Correlation between kallisto and other methods with marker genes") +
+  scale_fill_viridis_d(name = "kallisto cluster", option = "E") +
+  facet_wrap(~ method, ncol = 1, strip.position = "right")
+```
+
+That's another piece of aRt. Alevin has the worst correlation here, but even that is not bad. Also, the smaller clusters don't really tend to have higher correlation. We also see a spike of near perfect correlation, with representation of a variety of clusters. Why such a spike? A substantial portion of cells in that spike are from cluster 15 in kallisto, which are red blood cells. But without those cells, there may still be a spike.
+
+Also try Pearson correlation
+```{r}
+cors_pearson <- map(cor_use[c("cellranger", "alevin", "star")],
+            function(m) {
+              map_dbl(bcs_inter, ~ cor(cor_use$kallisto[, .x], m[, .x], method = "pearson"))
+            }) %>% 
+  as_tibble() %>% 
+  mutate(clust_use = seus$kallisto$RNA_snn_res.1) %>% 
+  gather(key = "method", value = "pearson", -clust_use)
+ggplot(cors_pearson, aes(pearson, fill = clust_use)) +
+  geom_histogram(bins = 100) +
+  labs(x = "Pearson correlation", y = "count",
+       title = "Correlation of kallisto and CellRanger with marker genes") +
+  scale_fill_viridis_d(name = "cluster", option = "E") +
+  facet_wrap(~ method, ncol = 1, strip.position = "right")
+```
+
+The Pearson corrrelation coefficients are generally higher than the Spearman correlation coefficients, so there's no spike. Still wondering why.
+
+Also see how correlation relates to number of genes detected and nUMI.
+```{r}
+metas %>% 
+  filter(orig.ident != "kallisto") %>% 
+ggplot(aes(nCount_RNA, nFeature_RNA, color = cors_spearman$spearman)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  scale_color_viridis_c(name = "spearman") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "nUMI", y = "nGene") +
+  facet_wrap(~ orig.ident)
+```
+
+See how the correlation looks in tSNE. Hopefully this also helps identifying which cluster is leading to that spike at near perfect Spearman correlation
+
+```{r}
+# Add metadata
+spearman_meta <- split(cors_spearman$spearman, cors_spearman$method) %>% 
+  map(setNames, nm = bcs_inter)
+pearson_meta <- split(cors_pearson$pearson, cors_pearson$method) %>% 
+  map(setNames, nm = bcs_inter)
+seus[2:4] <- map2(seus[2:4], spearman_meta, AddMetaData, col.name = "spearman")
+seus[2:4] <- map2(seus[2:4], pearson_meta, AddMetaData, col.name = "pearson")
+```
+
+```{r, fig.width=7, fig.height=7}
+# Plot spearman
+ps <- imap(seus[2:4], ~ FeaturePlot(.x, features = "spearman", cols = viridis(256), pt.size = 0.5) +
+            ggtitle(.y) +
+            theme(legend.position = "none"))
+grid.arrange(grobs = ps, ncol = 2)
+```
+
+It's clear that some clusters tend to have higher correlation with kallisto than others.
+```{r}
+ggplot(cors_spearman, aes(clust_use, spearman)) +
+  geom_violin() +
+  geom_jitter(size = 0.1, alpha = 0.1) +
+  facet_wrap(~ method, ncol = 1, strip.position = "right") +
+  labs(x = "kallisto cluster")
+```
+
+The spike of near perfect correlation is spread across several clusters. Those are where the ranks of the top marker genes are the same. But why such a spike?
+
+Also see Pearson correlation:
+
+```{r, fig.width=7, fig.height=7}
+# Plot pearson
+ps <- imap(seus[2:4], ~ FeaturePlot(.x, features = "pearson", cols = viridis(256), pt.size = 0.5) +
+            ggtitle(.y) +
+            theme(legend.position = "none"))
+grid.arrange(grobs = ps, ncol = 2)
+```
+
+The contrast between clusters is more stark than in spearman.
+```{r}
+ggplot(cors_pearson, aes(clust_use, pearson)) +
+  geom_violin() +
+  geom_jitter(size = 0.1, alpha = 0.1) +
+  facet_wrap(~ method, ncol = 1, strip.position = "right") +
+  labs(x = "kallisto cluster")
+```
+
+### Of genes
+
+```{r}
+cors_gene_spearman <- map(cor_use[c("cellranger", "alevin", "star")],
+            function(m) {
+              map_dbl(top_markers_inter, 
+                      ~ cor(cor_use$kallisto[.x,], m[.x,], method = "spearman"))
+            }) %>% 
+  as_tibble() %>% 
+  gather(key = "method", value = "cor") %>% 
+  mutate(corr_method = "spearman")
+cors_gene_pearson <- map(cor_use[c("cellranger", "alevin", "star")],
+            function(m) {
+              map_dbl(top_markers_inter, 
+                      ~ cor(cor_use$kallisto[.x,], m[.x,], method = "pearson"))
+            }) %>% 
+  as_tibble() %>% 
+  gather(key = "method", value = "cor") %>% 
+  mutate(corr_method = "pearson")
+cors_gene <- bind_rows(cors_gene_spearman, cors_gene_pearson)
+ggplot(cors_gene, aes(method, cor)) +
+  geom_violin() +
+  geom_jitter(size = 0.3, alpha = 0.3, width = 0.3) +
+  labs(x = "Correlation", y = "count",
+       title = "Correlation of marker genes") +
+  facet_wrap(~ corr_method, nrow = 1)
+```
+
+Again, Pearson tends to give higher correlation, but with both methods of correlation, the correlation is generally high.
+
+# DE between methods
+How shall I do the differential expression? I can either do it pairwise or one method versus all others. Which way shall I go? Since what's of interest is how kallisto bus compares to other methods, I'll do differential expression of kallisto bus compared to each of the other 3 methods.
+
+## All clusters
+```{r}
+method_markers <- map(seus[2:4], ~ methodDE(seus$kallisto, .x, test.use = "LR", 
+                                            latent.vars = "nCount_RNA", verbose = FALSE) %>% 
+                        filter(p_val_adj < 0.05))
+```
+
+See what genes are differentially "expressed"
+```{r}
+method_markers <- map(method_markers, left_join, y = gns, by = "gene")
+```
+
+Won't make volcano plots as the p-values are pretty much 0.
+
+Manual inspection reveals quite a few ribosomal genes, predicted genes, and housekeeping genes. I'm doing GSEA again to see what kinds of genes are overrepresented.
+
+```{r}
+method_gsea <- imap(method_markers, 
+                   ~ egsea_ora(.x$gene, "mouse", gns, entrez_inter, kegg$kg.sets,
+                               logFC = .x$avg_logFC) %>% 
+                     egsea_results_df() %>% 
+                     mutate(method = .y)) %>% 
+  bind_rows()
+```
+
+```{r}
+method_gsea %>% 
+  filter(p.adj < 0.05)
+```
+
+Ribosomal genes are overrepresented, as expected.
+```{r}
+saveRDS(method_gsea, paste0("./output/", name_regex, "/method_gsea.rds"))
+```
+
+Another question: Do the DE genes here tend to have high or low counts?
+```{r}
+method_de_genes <- map(method_markers, ~ .x$gene) %>% unlist() %>% unique()
+intersect_count_plot(setdiff(genes_inter, method_de_genes), method_de_genes, filtered_rowsums) +
+  scale_x_discrete(labels = c("non-DE", "DE")) +
+  labs(y = "Total counts")
+```
+
+They don't necessarily have low counts.
+```{r}
+method_markers <- imap(method_markers, ~ mutate(.x, method = .y)) %>% 
+  bind_rows()
+saveRDS(method_markers, paste0("./output/", name_regex, "/method_markers.rds"))
+```
+
+Plot whether genes in each gene set tend to be enriched or depleted
+
+```{r}
+gsea_logFC_bar(method_markers, kegg_df, method_gsea, species, ncol = 1, hjust = 0.5,
+               strip_position = "top", text_angle = 0) +
+  coord_flip()
+```
+
+```{r}
+method_markers %>% 
+  filter(method == "alevin")
+```
+
+So CellRanger and STAR did not have statistically significant enriched gene sets. Ricosomal genes are the most common among genes in enriched gene sets, and these genes tend to be depleted in kallisto (single gene). If we're not interested in studying expression of ribosomal genes, then this should be fine. About olfactory transduction, again, genes families are concerned, so I also suspect that UMI multimapping is the culprit here.
+
+## Cluster-wise
+In correlation bewteen the corresponding barcodes, we see that some clusters of cells have better correlation than others. 
+```{r}
+method_cluster_markers <- map(seus[2:4],
+                              ~ methodDE_cluster(seus$kallisto, .x, test.use = "LR", 
+                                            latent.vars = "nCount_RNA", verbose = FALSE) %>% 
+                                filter(p_val_adj < 0.05))
+```
+
+```{r}
+method_cluster_markers <- map(method_cluster_markers, left_join, y = gns, by = "gene")
+```
+
+First of all, check the number of "markers" for each cluster
+```{r}
+method_cluster_markers <- imap(method_cluster_markers, ~ mutate(.x, method = .y)) %>% 
+  bind_rows()
+method_cluster_markers <- method_cluster_markers %>% 
+  mutate(cluster = factor(cluster, levels = as.character(0:(n_clusts["kallisto"] - 1))))
+method_cluster_de_genes <- unique(method_cluster_markers$gene)
+```
+
+```{r}
+method_cluster_markers %>% 
+  mutate(change = cut(avg_logFC, -5:5)) %>% 
+ggplot(aes(cluster, fill = fct_rev(change))) +
+  geom_bar() +
+  facet_wrap(~ method, ncol = 1, strip.position = "right") +
+  scale_fill_viridis_d(option = "E", name = "logFC", direction = -1)
+```
+
+As expected, some clusters have more DE genes than others. There's more depletion compared to alevin, as only alevin keeps multi-mapped reads. Are certain types of genes enriched?
+
+```{r}
+method_cluster_gsea <- cluster_wise_gsea(method_cluster_markers,
+                                         species = species, gns = gns, 
+                                         universe = entrez_inter,
+                                         gsets = kegg$kg.sets)
+```
+
+```{r}
+method_cluster_gsea %>% 
+  filter(p.adj < 0.05)
+```
+
+See which gene sets come up the most often:
+```{r, fig.width=8}
+gsea_bubble(method_cluster_markers, kegg_df, method_cluster_gsea, species, 4)
+```
+
+As expected, ribosom comes up the most often, but only in alevin. 
+
+```{r}
+saveRDS(method_cluster_gsea, paste0("./output/", name_regex, "/method_cluster_gsea.rds"))
+```
+
+Also plot, across all clusters, whether genes in certain gene sets tend to be depleted or enriched in kallisto
+```{r, fig.height=8, fig.width=8}
+gsea_logFC_bar(method_cluster_markers, kegg_df, method_cluster_gsea, species, ncol = 1)
+```
+
+Again, ribosomal genes are the worst offender. Number 2 is again olfactory genes. 
+
+How about the general expression level of these genes compared to other genes?
+```{r}
+non_DE <- setdiff(genes_inter, method_cluster_markers$gene)
+intersect_count_plot(non_DE, method_cluster_de_genes, filtered_rowsums) +
+  scale_x_discrete(labels = c("non-DE", "DE")) +
+  labs(y = "Total counts")
+```
+
+Not much difference.
+
+# Number of paralogs
+Q: Are the differences between methods I saw related to number of paralogs? Do DE genes tend to have more paralogs? Genes with paralogs are more prone to multimapping UMIs due to homologous sequences.
+
+```{r}
+# Get paralog info
+paralog <- getBM(c("ensembl_gene_id", "hsapiens_paralog_ensembl_gene"), mart = mart)
+```
+
+```{r}
+paralog_summary <- paralog %>% 
+  mutate(has_paralog = hsapiens_paralog_ensembl_gene != "") %>% 
+  group_by(has_paralog, ensembl_gene_id) %>% 
+  summarize(n_paralog = length(hsapiens_paralog_ensembl_gene)) %>% 
+  mutate(n_paralog = case_when(has_paralog ~ n_paralog,
+                               !has_paralog ~ 0L))
+```
+
+How many genes in our dataset have paralogs?
+
+```{r}
+paralog_summary2 <- paralog_summary %>% 
+  filter(ensembl_gene_id %in% genes_inter)
+paralog_summary2 %>% 
+  dplyr::count(has_paralog)
+```
+
+That's more than half of the genes in our dataset. Among genes that have paralogs, how many paralogs do they have? Do DE genes between method tend to have more paralogs? I'm using the overall DE genes, not the cluster wise ones, since this is not a cluster wise comparison.
+```{r}
+paralog_summary2 <- paralog_summary2 %>% 
+  left_join(method_markers[,c(2,6,10)], by = c("ensembl_gene_id" = "gene")) %>% 
+  mutate(is_DE = !is.na(avg_logFC),
+         method = factor(replace_na(method, "not DE"), 
+                         levels = c("alevin", "cellranger", "star", "not DE")))
+```
+
+```{r}
+ggplot(paralog_summary2, aes(n_paralog, fill = is_DE)) +
+  geom_bar(aes(y = ..prop..), position = "dodge") +
+  labs(x = "Number of paralogs", y = "Proportion of genes")
+```
+
+This is hard to read for the few genes with lots of paralogs. Also look at ECDF, where I can plot DE genes for different methods.
+```{r}
+ggplot(paralog_summary2, aes(n_paralog, color = method)) +
+  stat_ecdf() +
+  labs(x = "Number of paralogs", y = "Cumulative probability") +
+  scale_color_manual(values = c(hue_pal()(3), "gray60"))
+```
+
+Maybe DE genes do tend to have fewer genes with few paralogs; the ECDF of DE genes is slightly below that of non-DE genes for small number of paralogs.
+```{r}
+DE <- paralog_summary2$n_paralog[paralog_summary2$is_DE]
+not_DE <- paralog_summary2$n_paralog[!paralog_summary2$is_DE]
+ks.test(not_DE, DE, alternative = "greater")
+```
+
+CDF lying above means there're more small values, which means DE genes tend to have more paralogs than non-DE genes, though from the ECDF, it's just somewhat more. I know, Kolmogorov-Smirnov test is for continuous distributions, but since I have quite many different numbers of paralogs, I think I can sort of pretend that it's continuous. 
+
+Q: Are there top cluster marker genes that are also differntially "expressed" between methods?
+```{r}
+intersect(method_de_genes, top_markers_inter)
+```
+
+Do they tend to have lower logFC when comparing methods (not comparing clusters within methods)?
+```{r}
+ggplot(method_markers, aes(avg_logFC, ..density.., color = method)) +
+  geom_freqpoly(bins = 100) +
+  facet_wrap(~ gene %in% top_markers_inter, ncol = 1, strip.position = "right") +
+  labs(x = "Is real top marker")
+```
+
+Well, sort of, at least they're not extreme; all the logFC here are less then 1. Do those genes tend to have worse correlation? Aren't they supposed to or they won't be DE?
+```{r}
+cors_gene <- cors_gene %>% 
+  mutate(gene = rep(top_markers_inter, 6)) %>% 
+  left_join(paralog_summary2[,c(2,3,6)], by = c("gene" = "ensembl_gene_id"))
+ggplot(cors_gene, aes(method, cor, color = is_DE)) +
+  geom_violin() +
+  geom_jitter(size = 0.5, alpha = 0.3, 
+              position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.9)) +
+  labs(x = "Correlation", y = "count",
+       title = "Correlation of marker genes") +
+  facet_wrap(~ corr_method, nrow = 1)
+```
+
+Yes, they do. Do top marker genes with more paralogs have worse correlation between kallisto and other methods?
+
+```{r}
+ggplot(cors_gene, aes(n_paralog, cor, color = is_DE)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "lm", size = 1, alpha = 0.2) +
+  facet_grid(corr_method ~ method)
+```
+
+So top marker genes with more paralogs don't really have worse correlation between kallisto and other methods. Then there must be something about those DE genes besides paralogs.
+
+Which kegg gene set has genes with the most paralogs? Here I'll only plot the enriched gene sets in cluster wise method DE genes, as this encompasses all enriched gene sets in overall method DE genes. Here I only plot DE genes.
+
+```{r, fig.height=7, fig.width=8}
+method_cluster_paralog <- method_cluster_markers %>% 
+  df4gsea_plot(kegg_df, method_cluster_gsea, species) %>% 
+  left_join(paralog_summary, by = c("gene" = "ensembl_gene_id"))
+ns <- sort(unique(method_cluster_paralog$n_paralog), decreasing = TRUE)
+pal <- viridis(max(ns + 1), option = "E")[ns + 1]
+ggplot(method_cluster_paralog, aes(fct_reorder(gene_set, gene_set, length, .desc = TRUE), 
+             fill = fct_rev(factor(n_paralog)))) +
+  geom_bar() +
+  scale_fill_manual(values = pal, name = "n paralog") +
+  facet_wrap(~ method, ncol = 1, strip.position = "right") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+  labs(y = "Number of genes", x = "gene set")
+```
+
+I didn't know that tight junction genes can have many paralogs.

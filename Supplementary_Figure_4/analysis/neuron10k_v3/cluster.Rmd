@@ -1,0 +1,202 @@
+---
+title: "Cluster membership"
+author: "Lambda"
+date: "5/15/2019"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggalluvial)
+library(viridis)
+library(OmicsMarkeR)
+theme_set(theme_bw())
+name_use <- "neuron10k_v3"
+seus <- readRDS(paste0("./output/", name_use, "/seus_kc_leiden.rds"))
+cell_types <- readRDS(paste0("./output/", name_use, "/cell_types.rds"))
+markers_gsea <- readRDS(paste0("./output/", name_use, "/cluster_gsea.rds"))
+n_clusts <- map_dbl(seus, ~ length(unique(.x@meta.data$RNA_snn_res.1)))
+```
+
+# Corresponding clusters
+I should compare overlap of enriched kegg pathways between methods. The goal of the comparison is to see whether clustering in these different methods pick up the same cell types. How shall I do this? First I should find which cluster in kallisto corresponds to which cluster in other methods, and then see how their enriched pathways overlap. So now I try to find which cluster corresponds to which and how good the correspondence is. 
+
+```{r}
+clusts <- map(seus, ~ .x@meta.data %>% 
+                mutate(barcode = rownames(.x@meta.data)) %>% 
+                dplyr::select(orig.ident, seurat_clusters, barcode)) %>% 
+  bind_rows() %>% 
+  mutate(seurat_clusters = factor(seurat_clusters, levels = as.character(1:max(n_clusts))))
+clusts <- clusts %>% 
+  spread(orig.ident, seurat_clusters)
+clusts_alluvial <- clusts %>% 
+  group_by_if(is.factor) %>% 
+  dplyr::count()
+```
+
+```{r}
+saveRDS(clusts, paste0("./output/", name_use, "/clusters_all4.rds"))
+```
+
+First do a barplot to see where cells in kallisto clusters go
+```{r cluster_cell_count}
+clust_assign <- clusts %>% 
+  gather(key = "method", value = "cluster", -barcode, -kallisto) %>% 
+  mutate(cluster = factor(cluster, levels = as.character(0:(max(n_clusts) - 1))))
+p <- ggplot(clust_assign, aes(kallisto, fill = cluster)) +
+  facet_wrap(~ method, ncol = 1, strip.position = "right") +
+  scale_fill_viridis_d(option = "E")
+p + geom_bar(color = "gray", size = 0.1) +
+  labs(y = "Number of cells")
+```
+
+Plot the proportions to better see the small clusters
+```{r cluster_cell_prop}
+p + geom_bar(position = "fill", color = "gray", size = 0.1) +
+  labs(y = "Proportion of cells")
+```
+
+Another way to visualize where the cells go is alluvial plot.
+```{r cluster_alluvial, fig.height=10, fig.width=10}
+ggplot(clusts_alluvial, aes(y = n, axis1 = kallisto, axis2 = cellranger)) +
+  geom_flow(aes(fill = kallisto, color = kallisto), size = 0.3, width = 1/6) +
+  scale_x_discrete(limits = c("kallisto", "cellranger"), expand = c(0,0)) +
+  geom_stratum(width = 1/6) +
+  geom_text(stat = "stratum", label.strata = TRUE) +
+  labs(y = "Number of cells") +
+  scale_fill_viridis_d(name = "kallisto cluster", option = "E") +
+  scale_color_viridis_d(name = "kallisto cluster", option = "E") +
+  scale_y_continuous(expand = c(0,0))
+```
+
+Kind of a mess, thanks to a relatively small number of cells, but we do see some clear bands. The problem with saying which cluster in kallisto corresponds to which in another method is merging and splitting of some clusters. Why does that happen? Louvian clustering works like this: First build k nearest neighbor graph. Then initially assign each cell to its own cluster. Then for each cell, try to move it to the cluster of each of its neighhbor on the knn graph andd see if that increases modularity, and finally choose the reassignment of cluster that maximizes modularity. This is a greedy algorithm, and I would expect the results to be somewhat different depending on the starting point, so I would take the clustering with a grain of salt. But here, by default, `FindCluster` does 10 random starts and fixes a random seed of 0, so every time the starting points are the same. The barcodes are in the same order in all 4 matrices, so I would expect Louvain to start at the same cells in all 4 matrices. Then it's probably something about the cells that lead to clusters merging and splitting. Splitting, when splitting leads to greater modularity, and merging when splitting does not. Here we also see that there're fewer small splits beween CellRanger and STAR, further highlighting how different algorithms can lead to different clustering of cells given that everything else is the same. But here kallisto isn't leading to more variability.
+
+```{r}
+clust_n_cell <- clusts %>% 
+  gather(key = "method", value = "cluster", -barcode) %>% 
+  group_by(method, cluster) %>% 
+  nest(.key = "barcodes") %>% 
+  mutate(barcodes = map(barcodes, ~ .x$barcode))
+clust_assign_summary <- clust_assign %>% 
+  group_by(kallisto, method, cluster) %>% 
+  dplyr::count(name = "n_intersect") %>% 
+  left_join(clust_n_cell, by = c("method", "cluster")) %>% 
+  left_join(setNames(clust_n_cell[clust_n_cell$method == "kallisto", 2:3],
+                     c("cluster", "kallisto_bcs")),
+            by = c("kallisto" = "cluster")) %>% 
+  mutate(n_union = map2_int(barcodes, kallisto_bcs, ~ length(union(.x, .y))),
+         jaccard = n_intersect/n_union) %>% 
+  select_if(function(x) !is.list(x)) %>% 
+  ungroup() %>% 
+  mutate(kallisto = factor(kallisto, levels = as.character(1:(n_clusts["kallisto"]))),
+         cluster = factor(cluster, levels = as.character(1:(max(n_clusts)))))
+```
+
+Now I have the Jaccard indices between clusters, and can visualize it
+```{r cluster_jaccard, fig.width=9, fig.height=8}
+ggplot(clust_assign_summary, aes(cluster, kallisto, fill = jaccard)) +
+  geom_tile() +
+  scale_fill_viridis_c() +
+  facet_wrap(~ method, ncol = 2) +
+  coord_equal() +
+  theme(panel.background = element_rect(fill = viridis(256)[1]),
+        panel.grid = element_blank()) +
+  labs(y = "kallisto cluster")
+```
+
+Again, there's the problem of a cluster getting totally split up and scatter into several clusters in another method, which happens here in alevin. In that case, I won't be able to assign clusters nicely; perhaps I can use the cluster with the largest Jaccard index. Another complicated case is 50/50 splits or merging of two clusters into one. I think I'll do the cluster assignments this way: 
+```{r}
+top_clust_kallisto <- clust_assign_summary %>% 
+  group_by(kallisto, method) %>% 
+  top_n(1, jaccard) %>% 
+  dplyr::select(kallisto:cluster)
+top_clust <- clust_assign_summary %>% 
+  group_by(method, cluster) %>% 
+  top_n(1, jaccard) %>% 
+  dplyr::select(kallisto:cluster)
+clust_assign_final <- full_join(top_clust_kallisto, top_clust)
+```
+So what to do? Quick and dirty way just to compare GSEA of marker genes: Just use the majority. Cluster 15 from kallisto has been split about 50/50 in CellRanger and STAR; I'll merge the clusters it's split into there. To automate this, I'll look at the top 2 clusters, and if they're each about 50%, then I'll merge them. Also, there are cases when some cells from kallisto are split off from a large cluster, forming a small cluster in another method. 
+
+# Cell type annotation
+With the cluster assignments, I can compare annotated cell types within corresponding clusters. The corresponding clusters don't contain exactly the same cells, but it won't be that bad if the cell types are the same.
+```{r}
+clusts$kallisto_annot <- cell_types$label[cell_types$method == "kallisto"]
+```
+
+```{r}
+# Get largest group of cell type in each cluster
+cell_type_clust <- cell_types %>% 
+  group_by(method, cluster) %>% 
+  dplyr::count(label) %>% 
+  top_n(1, n) %>% 
+  dplyr::select(-n)
+```
+
+```{r}
+cell_type_clust_kallisto <- cell_type_clust %>% 
+  ungroup() %>% 
+  filter(method == "kallisto") %>% 
+  dplyr::select(cluster, kallisto_annot = label)
+clust_assign_annot <- clust_assign_final %>% 
+  left_join(cell_type_clust, by = c("method", "cluster")) %>% 
+  left_join(cell_type_clust_kallisto, by = c("kallisto" = "cluster"))
+```
+
+```{r}
+clust_assign_annot %>% 
+  group_by(method) %>% 
+  mutate(same_annot = map2_lgl(label, kallisto_annot, `==`)) %>% 
+  dplyr::count(same_annot)
+```
+
+So in most cases, the cluster cell type annotations match.
+
+# Gene set overlap
+With the cluster assignments, I can compare the enriched pathways.
+```{r}
+kallisto_sets <- markers_gsea %>% 
+  filter(method == "kallisto") %>% 
+  dplyr::select(gene_set, cluster) %>% 
+  group_by(cluster) %>% 
+  nest(.key = "kallisto_gene_sets") %>% 
+  mutate(kallisto_gene_sets = map(kallisto_gene_sets, ~ .x$gene_set))
+markers_gsea_match <- markers_gsea %>% 
+  filter(method != "kallisto", p.adj < 0.05) %>% 
+  dplyr::select(gene_set, cluster, method) %>% 
+  group_by(cluster, method) %>% 
+  nest(.key = "gene_sets") %>% 
+  mutate(gene_sets = map(gene_sets, ~ .x$gene_set)) %>% 
+  left_join(clust_assign_final, by = c("method", "cluster")) %>% 
+  left_join(kallisto_sets, by = c("kallisto" = "cluster"))
+```
+
+Great, now I can see the intersection of enriched gene sets. An useful way is Jaccard index.
+```{r cluster_gsea_jaccard}
+markers_gsea_match <- markers_gsea_match %>% 
+  mutate(jaccard = map2_dbl(gene_sets, kallisto_gene_sets, jaccard))
+ggplot(markers_gsea_match, aes(method, jaccard)) +
+  geom_violin() +
+  geom_text(aes(label = kallisto), position = position_jitter(width = 0.4)) +
+  coord_flip()
+```
+
+For kallisto, cluster 17 does not have enriched gene sets among the marker genes, so of course the Jaccard index is 0. Kallisto cluster 17 is not assigned a cluster in CellRanger.
+```{r}
+# Save results
+saveRDS(clust_assign_final, paste0("./output/", name_use, "/cluster_assignment.rds"))
+saveRDS(clust_assign_summary, paste0("./output/", name_use, "/clust_assign_summary.rds"))
+saveRDS(markers_gsea_match, paste0("./output/", name_use, "/markers_gsea_match.rds"))
+```
+
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,205 @@
+---
+title: "Correlation"
+author: "Lambda"
+date: "5/15/2019"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE}
+library(Seurat)
+library(tidyverse)
+library(viridis)
+theme_set(theme_bw())
+source("./code/plot_comparison.R")
+name_use <- "neuron10k_v3"
+seus <- readRDS(paste0("./output/", name_use, "/seurat.rds"))
+markers <- readRDS(paste0("./output/", name_use, "/cluster_all4.rds"))
+genes_inter <- rownames(seus$kallisto)
+bcs_inter <- colnames(seus$kallisto)
+```
+
+```{r}
+topn <- 15
+top_markers_list <- markers %>% 
+  filter(rank_logFC <= topn, avg_logFC > 0.75)
+top_markers_list <- split(top_markers_list$gene, top_markers_list$method)
+```
+
+# Of cells
+See how well do the cells correlate, if I only consider the overlapping marker genes with rank of at least 15 within the cluster and have logFC of at least 0.75. It's arbitrary, but when it comes to experimental decisions, the top marker genes are more likely to be considered. Also, only enriched genes are considered, since those are more likely to be experimentally manipulated.
+
+```{r}
+top_markers_inter <- reduce(top_markers_list, intersect)
+saveRDS(top_markers_inter, file = paste0("./output/", name_use, "/top_markers_inter.rds"))
+```
+
+Just to make sure that the top markers we're looking at are not low count genes.
+```{r top_marker_counts}
+filtered_rowsums <- map(seus, ~ Matrix::rowSums(GetAssayData(.x, "counts")))
+intersect_count_plot(top_markers_inter, setdiff(genes_inter, top_markers_inter),
+                     sums = filtered_rowsums) +
+  scale_x_discrete(labels = c("top markers", "other genes"))
+```
+
+Good, there aren't super low count genes among marker genes we're using. I'll only do correlation between kallisto and each of the other methods, as the purpose of this study is to benchmark kallisto.
+
+```{r cell_spearman}
+# Among all cells
+cor_use <- map(seus, ~ as.matrix(GetAssayData(.x, "counts")[top_markers_inter, ]))
+cors_spearman <- map(cor_use[c("cellranger", "alevin", "star")],
+            function(m) {
+              map_dbl(bcs_inter, ~ cor(cor_use$kallisto[, .x], m[, .x], method = "spearman"))
+            }) %>% 
+  as_tibble()
+# Color by cluster in kallisto
+cors_spearman <- cors_spearman %>% 
+  mutate(clust_use = seus$kallisto$RNA_snn_res.1) %>% 
+  gather(key = "method", value = "spearman", -clust_use)
+ggplot(cors_spearman, aes(spearman, fill = clust_use)) +
+  geom_histogram(bins = 100) +
+  labs(x = "Spearman correlation", y = "count",
+       title = "Correlation between kallisto and other methods with marker genes") +
+  scale_fill_viridis_d(name = "kallisto cluster", option = "E") +
+  facet_wrap(~ method, ncol = 1, strip.position = "right")
+```
+
+That's another piece of aRt. Alevin has the worst correlation here, but even that is not bad. Also, the smaller clusters don't really tend to have higher correlation. We also see a spike of near perfect correlation, with representation of a variety of clusters. Why such a spike? A substantial portion of cells in that spike are from cluster 15 in kallisto, which are red blood cells. But without those cells, there may still be a spike.
+
+Also try Pearson correlation
+```{r cell_pearson}
+cors_pearson <- map(cor_use[c("cellranger", "alevin", "star")],
+            function(m) {
+              map_dbl(bcs_inter, ~ cor(cor_use$kallisto[, .x], m[, .x], method = "pearson"))
+            }) %>% 
+  as_tibble() %>% 
+  mutate(clust_use = seus$kallisto$RNA_snn_res.1) %>% 
+  gather(key = "method", value = "pearson", -clust_use)
+ggplot(cors_pearson, aes(pearson, fill = clust_use)) +
+  geom_histogram(bins = 100) +
+  labs(x = "Pearson correlation", y = "count",
+       title = "Correlation of kallisto and CellRanger with marker genes") +
+  scale_fill_viridis_d(name = "cluster", option = "E") +
+  facet_wrap(~ method, ncol = 1, strip.position = "right")
+```
+
+The Pearson correlation coefficients are generally higher than the Spearman correlation coefficients, so there's no spike. Still wondering why.
+
+Also see how correlation relates to number of genes detected and nUMI.
+```{r gene_umi_spearman}
+metas <- map(seus, ~ .x@meta.data) %>% bind_rows()
+metas %>% 
+  filter(orig.ident != "kallisto") %>% 
+  ggplot(aes(nCount_RNA, nFeature_RNA, color = cors_spearman$spearman)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  scale_color_viridis_c(name = "spearman") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "nUMI", y = "nGene") +
+  facet_wrap(~ orig.ident)
+```
+
+Ah, that spike is probably from that cluster with few genes but not so few UMIs. Are those red blood cells?
+```{r gene_umi_cluster}
+ggplot(seus$kallisto@meta.data, aes(nCount_RNA, nFeature_RNA, color = RNA_snn_res.1)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  scale_color_viridis_d(name = "cluster", option = "E") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "nUMI", y = "nGene")
+```
+
+Yes, they are. So that makes sense.
+
+See how the correlation looks in tSNE.
+
+```{r}
+# Add metadata
+spearman_meta <- split(cors_spearman$spearman, cors_spearman$method) %>% 
+  map(setNames, nm = bcs_inter)
+pearson_meta <- split(cors_pearson$pearson, cors_pearson$method) %>% 
+  map(setNames, nm = bcs_inter)
+seus[2:4] <- map2(seus[2:4], spearman_meta, AddMetaData, col.name = "spearman")
+seus[2:4] <- map2(seus[2:4], pearson_meta, AddMetaData, col.name = "pearson")
+```
+
+```{r spearman_tsne, fig.width=7, fig.height=7}
+# Plot spearman
+ps <- imap(seus[2:4], ~ FeaturePlot(.x, features = "spearman", cols = viridis(256), pt.size = 0.5) +
+            ggtitle(.y) +
+            theme(legend.position = "none"))
+grid.arrange(grobs = ps, ncol = 2)
+```
+
+It's clear that some clusters tend to have higher correlation with kallisto than others.
+```{r spearman_kallisto_cluster}
+ggplot(cors_spearman, aes(clust_use, spearman)) +
+  geom_violin() +
+  geom_jitter(size = 0.1, alpha = 0.1) +
+  facet_wrap(~ method, ncol = 1, strip.position = "right") +
+  labs(x = "kallisto cluster")
+```
+
+We do see some variability, though the variability isn't huge. But that's enough to justify doing cluster-wise differential expression between methods. Red blood cells (cluster 15) are an interesting case; they also have some of the worst correlations. Also see Pearson correlation:
+
+```{r pearson_tsne, fig.width=7, fig.height=7}
+# Plot pearson
+ps <- imap(seus[2:4], ~ FeaturePlot(.x, features = "pearson", cols = viridis(256), pt.size = 0.5) +
+            ggtitle(.y) +
+            theme(legend.position = "none"))
+grid.arrange(grobs = ps, ncol = 2)
+```
+
+The contrast between clusters is more stark than in spearman.
+```{r pearson_kallisto_cluster}
+ggplot(cors_pearson, aes(clust_use, pearson)) +
+  geom_violin() +
+  geom_jitter(size = 0.1, alpha = 0.1) +
+  facet_wrap(~ method, ncol = 1, strip.position = "right") +
+  labs(x = "kallisto cluster")
+```
+
+# Of genes
+
+```{r genes_cor}
+cors_gene_spearman <- map(cor_use[c("cellranger", "alevin", "star")],
+            function(m) {
+              map_dbl(top_markers_inter, 
+                      ~ cor(cor_use$kallisto[.x,], m[.x,], method = "spearman"))
+            }) %>% 
+  as_tibble() %>% 
+  gather(key = "method", value = "cor") %>% 
+  mutate(corr_method = "spearman")
+cors_gene_pearson <- map(cor_use[c("cellranger", "alevin", "star")],
+            function(m) {
+              map_dbl(top_markers_inter, 
+                      ~ cor(cor_use$kallisto[.x,], m[.x,], method = "pearson"))
+            }) %>% 
+  as_tibble() %>% 
+  gather(key = "method", value = "cor") %>% 
+  mutate(corr_method = "pearson")
+cors_gene <- bind_rows(cors_gene_spearman, cors_gene_pearson)
+ggplot(cors_gene, aes(method, cor)) +
+  geom_violin() +
+  geom_jitter(size = 0.3, alpha = 0.3, width = 0.3) +
+  labs(x = "Correlation", y = "count",
+       title = "Correlation of marker genes") +
+  facet_wrap(~ corr_method, nrow = 1)
+```
+
+Again, Pearson tends to give higher correlation, but with both methods of correlation, the correlation is generally high.
+
+```{r}
+saveRDS(cors_gene, file = paste0("./output/", name_use, "/cors_gene.rds"))
+```
+
+```{r}
+sessionInfo()
+```

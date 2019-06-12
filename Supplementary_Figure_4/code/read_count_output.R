@@ -1,0 +1,169 @@
+library(Matrix)
+library(data.table)
+library(BUSpaRse)
+library(stringr)
+#' Read matrix along with barcode and gene names
+#' 
+#' This function takes in a directory and name and reads the mtx file, genes,
+#' and barcodes, to return a sparse matrix with column names and row names.
+#' 
+#' @param dir Directory with the bustools count outputs.
+#' @param name The files in the output directory should be <name>.mtx, <name>.genes.txt,
+#' and <name>.barcodes.txt.
+#' @param tcc Logical, whether the matrix of interest is a TCC matrix. Defaults
+#' to \code{FALSE}.
+#' @return A dgCMatrix with barcodes as column names and genes as row names.
+#' 
+read_count_output <- function(dir, name, tcc = TRUE) {
+  dir <- normalizePath(dir, mustWork = TRUE)
+  m <- readMM(paste0(dir, "/", name, ".mtx"))
+  m <- t(m)
+  m <- as(m, "dgCMatrix")
+  # The matrix read has cells in rows
+  ge <- if (tcc) ".ec.txt" else ".genes.txt"
+  genes <- fread(paste0(dir, "/", name, ge), header = FALSE)$V1
+  barcodes <- fread(paste0(dir, "/", name, ".barcodes.txt"), header = FALSE)$V1
+  colnames(m) <- barcodes
+  rownames(m) <- genes
+  return(m)
+}
+
+#' Read STAR output
+#' 
+#' @inheritParams read_count_output
+#' @param out_path Directory where `matrix.mtx`, `features.tsv`, and `barcodes.tsv`
+#' are saved.
+#' @return A dgCMatrix with barcodes as column names and genes as row names.
+readSTAR <- function(out_path) {
+  out_path <- normalizePath(out_path, mustWork = TRUE)
+  mat_fn <- paste(out_path, "matrix.mtx", sep = "/")
+  f_fn <- paste(out_path, "genes.tsv", sep = "/")
+  b_fn <- paste(out_path, "barcodes.tsv", sep = "/")
+  mat_read <- readMM(mat_fn)
+  mat_read <- as(mat_read, "dgCMatrix")
+  gn <- fread(f_fn, header = FALSE)$V1
+  bc <- fread(b_fn, header = FALSE)$V1
+  rownames(mat_read) <- gn
+  colnames(mat_read) <- bc
+  return(mat_read)
+}
+
+#' Read salmon alevin binary output as sparse matrix
+#' 
+#' The most annoying part about alevin: all available methods to load the binary
+#' output return a dense matrix, which is a huge waste of memory. Here I try to
+#' load it as a sparse matrix.
+#' 
+#' @param files Directory with the salmon alevin output.
+#' @param save_mtx Logical, whether the sparse matrix should be saved as a mtx
+#' file. If \code{FALSE}, then a dgCMatrix is returned.
+#' @param save_path Where to save the mtx file. If \code{save_mtx = TRUE}, then
+#' this argument must be specified. If the directory doesn't exist, then it will
+#' be created.
+#' @param \dots Other arguments passed to \code{BUSpaRse::save_cellranger}.
+#' @return If \code{save_mtx = FALSE}, then a dgCMatrix with cells in columns 
+#' and genes in rows, with barcodes as column names and gene IDs as row names.
+#' Otherwise, 3 files will be written to the directory specified in \code{save_path}:
+#' matrix.mtx.gz, features.tsv.gz, and barcodes.tsv.gz, and the dgCMatrix is returned
+#' invisibly.
+#' 
+readAlevin_sparse <- function(files, save_mtx = FALSE, save_path = NULL,
+                              ...) {
+  dir <- sub("/alevin$","",dirname(files))
+  barcode.file <- file.path(dir, "alevin/quants_mat_rows.txt")
+  gene.file <- file.path(dir, "alevin/quants_mat_cols.txt")
+  matrix.file <- file.path(dir, "alevin/quants_mat.gz")
+  for (f in c(barcode.file, gene.file, matrix.file)) {
+    if (!file.exists(f)) {
+      stop("expecting 'files' to point to 'quants_mat.gz' file in a directory 'alevin'
+           also containing 'quants_mat_rows.txt' and 'quant_mat_cols.txt'.
+           please re-run alevin preserving output structure")
+    }
+  }
+  cell.names <- readLines(barcode.file)
+  gene.names <- readLines(gene.file)
+  num.cells <- length(cell.names)
+  num.genes <- length(gene.names)
+  #mat <- matrix(nrow=num.genes, ncol=num.cells, dimnames=list(gene.names, cell.names))
+  values <- rowinds <- colinds <- vector("list", num.cells)
+  con <- gzcon(file(matrix.file, "rb"))
+  pb <- txtProgressBar(style = 3, max = num.cells)
+  for (j in seq_len(num.cells)) {
+    v <- readBin(con, double(), endian = "little", n=num.genes)
+    non0_inds <- which(v > 0)
+    values[[j]] <- v[non0_inds]
+    rowinds[[j]] <- non0_inds
+    colinds[[j]] <- rep(j, length(non0_inds))
+    setTxtProgressBar(pb, j)
+  }
+  close(pb)
+  close(con)
+  values <- unlist(values)
+  rowinds <- unlist(rowinds)
+  colinds <- unlist(colinds)
+  mat <- sparseMatrix(i = rowinds, j = colinds, x = values, 
+                      dims = c(num.genes, num.cells),
+                      dimnames = list(gene.names, cell.names))
+  if (save_mtx) {
+    save_path <- normalizePath(save_path, mustWork = FALSE)
+    if (!dir.exists(save_path)) {
+      dir.create(save_path, recursive = TRUE)
+    }
+    save_cellranger(mat, save_path, ...)
+    invisible(mat)
+  } else {
+    return(mat)
+  }
+}
+
+#' Get the directory for a given dataset
+#' 
+#' There's some inconsistency in the naming convention. For some methods, Fan
+#' named something like "neuron_10k", while for some, it's "neuron10k", and I
+#' can't change that. So I use regex here to get the correct directory for the
+#' output of a given method for any dataset.
+#' 
+#' @param name_regex Regex for the dataset name, with 10x version.
+#' @param dir Directory whose subdirectories are outputs for each dataset, such
+#' as "salmon_out" for salmon alevin output.
+#' @return A length 1 character vector with the absolute path to the directory
+#' of interest. If there're more than 1 matches from the regex, then the first 
+#' one will be used.
+get_dir <- function(name_regex, dir) {
+  dir <- normalizePath(dir, mustWork = TRUE)
+  files <- list.dirs(dir)
+  files[str_detect(files, name_regex)][1]
+}
+
+#' Read in full matrices of all 4 methods
+#' 
+#' This function depends heavily on naming conventions and directory structures.
+#' 
+#' @param label Name of the dataset, such as "pbmc".
+#' @param n_cells Estimatedd number of cells, such as "1k" or "10k". Put NULL
+#' for SRR datasets.
+#' @param version Version of 10x chemistry used, such as "v2".
+#' @return A named list of 4 dgCMatrices.
+read_all_mats <- function(name_regex) {
+  out <- list()
+  # kallisto bus
+  cat("Reading kallisto bus output\n")
+  out$kallisto <- read_count_output(get_dir(name_regex, 
+                                            "/home/single_cell_analysis/kallisto_out_single"),
+                                    "genes", tcc = FALSE)
+  # CellRanger
+  cat("Reading CellRanger output\n")
+  cr_path <- get_dir(name_regex, "/home/single_cell_analysis/cellranger_out")
+  cr_path <- paste0(cr_path, "/outs/raw_feature_bc_matrix")
+  out$cellranger <- read_cellranger(cr_path)
+  colnames(out$cellranger) <- colnames(out$cellranger) %>% str_remove("-1")
+  # Salmon Alevin
+  cat("Reading Salmon Alevin output\n")
+  out$alevin <- read_cellranger(get_dir(name_regex, 
+                                        "/home/single_cell_analysis/brain_storm/output/alevin_mtx"))
+  # STAR solo
+  cat("Reading STAR solo output\n")
+  out$star <- readSTAR(get_dir(name_regex,
+                               "/home/single_cell_analysis/star_out"))
+  return(out)
+}

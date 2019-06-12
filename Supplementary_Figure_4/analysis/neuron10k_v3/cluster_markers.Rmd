@@ -1,0 +1,206 @@
+---
+title: "Cluster marker genes"
+author: "Lambda"
+date: "5/15/2019"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE}
+library(Seurat)
+library(UpSetR)
+library(tidyverse)
+library(viridis)
+theme_set(theme_bw())
+source("./code/plot_comparison.R")
+source("./code/gsea.R")
+name_regex <- "neuron_?10k_v3"
+name_use <- "neuron10k_v3"
+species <- "Mus musculus"
+```
+
+```{r}
+seus <- readRDS(paste0("./output/", name_use, "/seus_kc_leiden.rds"))
+gns <- read_csv(paste0("./data/Ensembl/gns_", str_replace(species, " ", "_"), ".csv"))
+n_clusts <- map_dbl(seus, ~ length(unique(.x@meta.data$RNA_snn_res.1)))
+```
+
+# Differential expression bewteen clusters
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+markers <- map(seus, FindAllMarkers, test.use = "LR", verbose = FALSE,
+               min.pct = 0.25, latent.vars = "nCount_RNA", only.pos = TRUE)
+markers <- imap(markers, ~ mutate(.x, method = .y)) %>% 
+  bind_rows()
+```
+
+```{r}
+# Add gene description
+markers <- markers %>% 
+  left_join(gns, by = "gene")
+markers$cluster <- as.factor(markers$cluster)
+markers$cluster <- fct_relevel(markers$cluster, as.character(1:(max(n_clusts))))
+# Only keep the significant markers
+markers <- markers %>% 
+  filter(p_val_adj < 0.05)
+```
+
+```{r}
+markers <- markers %>% 
+  group_by(method, cluster) %>% 
+  mutate(rank_logFC = dense_rank(-avg_logFC))
+```
+
+```{r}
+# Save results
+saveRDS(markers, paste0("./output/", name_use, "/cluster_all4.rds"))
+```
+
+```{r}
+markers %>% 
+  filter(avg_logFC > 0.75) %>% 
+  group_by(method, cluster) %>% 
+  top_n(5, avg_logFC) %>% 
+  arrange(method, cluster, desc(avg_logFC))
+```
+
+See how many markers for each cluster. This should only show enriched genes.
+```{r n_markers, fig.width=10, fig.height=6}
+plot_n_markers(markers, 0.75, nudge_y = 30)
+```
+
+Those smaller clusters have a lot of markers. They must be really unique. The marker genes for each cluster are selected by comparing the cluster of interest to all other cells. 
+
+Also, do smaller clusters tend to have larger logFC?
+```{r logFC, fig.width=10, fig.height=6}
+ggplot(markers, aes(cluster, avg_logFC)) +
+  geom_violin() +
+  geom_jitter(size = 0.1, alpha = 0.1) +
+  facet_wrap(~ method)
+```
+
+## GSEA
+```{r}
+kegg <- readRDS(paste0("./data/kegg/kegg_", str_replace(species, " ", "_"), ".rds"))
+kegg_df <- read_csv(paste0("./data/kegg/kegg_df_", str_replace(species, " ", "_"), ".csv"))
+entrez_inter <- readRDS(paste0("./output/", name_use, "/entrez_inter.rds"))
+```
+
+Here I use GSEA on marker genes of each cluster to find the cell type of each cluster.
+```{r, results='hide', message=FALSE}
+markers_gsea <- markers %>% 
+  top_n(20, avg_logFC) %>% 
+  cluster_wise_gsea(species = species, gns = gns, 
+                    universe = entrez_inter,
+                    gsets = kegg$kg.sets)
+```
+
+See what pathways are enriched in each cluster
+```{r}
+markers_gsea %>% 
+  filter(p.adj < 0.05, method == "kallisto") %>% 
+  group_by(cluster) %>% 
+  top_n(10, -p.adj)
+```
+
+Even with this result, it's still hard to tell the cell type of each cluster. Furthermore, I tweaked the filtering criterion of the marker genes until I don't get into error. The error occurs when all marker genes for a cluster can't be matched to a kegg pathway, and this is more likely to happen when there're few marker genes, which is often the case when the filtering criterion is stringent. I know that the filtering criterion is quite arbitrary. But at least I can tell several of the clusters are different types of neurons, some are some sort of immune cells, and some are endothelial cells. I also know that cluster 15 from kallisto is red blood cells.
+
+```{r marker_bubble, fig.height=10, fig.width=10}
+markers %>% 
+  top_n(20, avg_logFC) %>% 
+  gsea_bubble(kegg_df, markers_gsea, species, 4)
+```
+
+```{r}
+saveRDS(markers_gsea, paste0("./output/", name_use, "/cluster_gsea.rds"))
+```
+
+## Compare marker genes
+How well do the marker genes compare?
+```{r markers_upset}
+markers_list <- split(markers$gene, markers$method)
+upset(fromList(markers_list), order.by = "freq")
+```
+
+They overlap very well, but again, kallisto is the one with the most peculiar genes. What are those peculiar genes?
+```{r}
+kallisto_only <- setdiff(markers_list$kallisto, 
+                         purrr::reduce(markers_list[c("cellranger", "alevin", "star")], union))
+markers %>% 
+  filter(gene %in% kallisto_only)
+```
+
+A whole bunch of predicted genes and housekeeping genes again. Are they generally low rank?
+```{r}
+summary(markers$rank_logFC[markers$gene %in% kallisto_only])
+```
+
+So yes, they're usually low rank, which means it's not really that big a deal. How about the top markers for each cluster?
+```{r top_marker_upset}
+topn <- 15
+top_markers_list <- markers %>% 
+  filter(rank_logFC <= topn, avg_logFC > 0.75)
+top_markers_list <- split(top_markers_list$gene, top_markers_list$method)
+upset(fromList(top_markers_list), order.by = "freq")
+```
+
+Again, the intersection is pretty good, but here the pseudoalignment methods (alevin and kallisto) tend to have more non-overlapping genes. 
+
+```{r}
+markersdf_list <- markers %>% 
+  dplyr::select(avg_logFC, p_val_adj:entrezgene) %>% 
+  group_by(method) %>% 
+  group_split() %>% 
+  setNames(., map_chr(., ~ unique(.x$method)))
+markers_inter <- map(markersdf_list, ~ inner_join(.x, markersdf_list$kallisto, 
+                                          by = c("gene", "gene_name", "description"))) %>% 
+  bind_rows()
+```
+
+I'll plot pairwise comparison of marker gene overlap in clusters. Pairwise means the columns are for clusters from method x and they're colored by marker genes from cluster y.
+
+Here I'm making a plot showing the proportion of top n genes in cluster.x that are also top n genes in some cluster.y. 
+```{r marker_overlap}
+markers_inter %>% 
+  filter(rank_logFC.x < 15, rank_logFC.y < 15, avg_logFC.x > 0.75, avg_logFC.y > 0.75) %>% 
+ggplot(aes(cluster.y, fill = cluster.x)) +
+  geom_bar(position = "fill", color = "gray", size = 0.2) +
+  scale_fill_viridis_d(option = "E", name = "cluster") +
+  labs(y = "Proportion of marker genes",
+       x = "kallisto cluster",
+       title = "Top 15 marker gene overlap in clusters") +
+  facet_wrap(~ method.x, ncol = 1, strip.position = "right")
+```
+
+What a piece of aRt! And I did this without writing a single loop. We also see some approximately 50/50 splits, indicating how marker genes of clusters overlap. We see that the patterns are quite similar between methods. Without using plotly, it will be hard to tell which color is which on the plot; this plot is only for qualitatively finding the top n rank that gives clean cluster correspondence between methods. 
+
+Another plot: how ranks in x relate to ranks in y
+```{r marker_ranks}
+topn <- 15
+# With all significant genes
+markers_inter %>% 
+  filter(rank_logFC.x <= topn, rank_logFC.y <= topn,
+         avg_logFC.x > 0.75, avg_logFC.y > 0.75) %>% 
+ggplot(aes(rank_logFC.x, rank_logFC.y)) +
+  geom_bin2d(bins = topn - 1) +
+  scale_fill_viridis_c() +
+  scale_x_continuous(breaks = 1:topn, expand = c(0.02, 0.02)) +
+  scale_y_continuous(breaks = 1:topn, expand = c(0.02, 0.02)) +
+  facet_wrap(~ method.x, ncol = 2) +
+  coord_equal() +
+  theme(panel.background = element_rect(fill = viridis(256)[1]),
+        panel.grid = element_blank()) +
+  labs(x = "kallisto logFC rank", y = "logFC rank")
+```
+
+Another piece of aRt. It's good to know that, at least the for higher ranked marker genes, the ranks match pretty well in all methods (see the highlighted diagonal), and the best concordance is in the number 1 marker genes. The diagonal fades away for genes with lower rank. But what does it mean to have 50 number 1 genes while there're only 26 or 27 clusters? The genes are actually duplicated. The same gene can have the same rank in multiple clusters. The same gene can also be a marker for multiple clusters, albeit with different ranks, and that's why there are off-diagonal entries when I plot the same method against itself.
+
+```{r}
+sessionInfo()
+```
