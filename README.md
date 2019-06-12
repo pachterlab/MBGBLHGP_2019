@@ -1,1 +1,1 @@
-# kallistobuspaper_2019
+# Code for reproducing results of the paper "Modular and efficient pre-processing of single-cell RNA-seq
