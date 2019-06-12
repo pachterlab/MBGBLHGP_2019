@@ -1,0 +1,70 @@
+#!/bin/bash
+cp configure_cellranger/config_heart_1k_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_heart_1k_v3_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8 
+
+cp configure_cellranger/config_hgmm_1k_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_hgmm_1k_v3_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8 
+
+cp configure_cellranger/config_neuron_10k_v3_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_pbmc_10k_v3_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8 
+
+cp configure_cellranger/config_pbmc_1k_v3_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_hgmm_10k_v3_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8 
+
+cp configure_cellranger/config_SRR8327928_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_SRR8639063_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_SRR6998058_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_SRR8206317_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_SRR8611943_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_EMTAB7320_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_SRR8513910_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_SRR8599150_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_SRR7692543_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_SRR8257100_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_SRR6956073_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_SRR7299563_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_SRR8524760_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_SRR6470906_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+
+cp configure_cellranger/config_SRR6470907_v2_cellranger.yaml config_cellranger.yaml
+snakemake -s Snakefile_cellranger --cores 8
+

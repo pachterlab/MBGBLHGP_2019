@@ -1,0 +1,26 @@
+from os.path import join
+configfile: "config_salmon.yaml"
+
+salmon=config["SALMON"]
+thread=config["THREAD"]
+outprefix=config["OUTPUT"]
+index=config["INDEX"]
+fq1=config["FASTQ1"]
+fq2=config["FASTQ2"]
+tgmap=config["TGMAP"]
+whitelist=config["WHITELIST"]
+
+rule all:
+    input: expand("salmon_out/{outprefix}_out/log.txt", outprefix=config["OUTPUT"])
+
+rule run_salmon:
+    output:
+        "salmon_out/{outprefix}_out/log.txt"
+    benchmark:
+        "benchmarks_salmon/{outprefix}.txt"
+    shell:
+        """
+         rm -rf salmon_out/{outprefix}_out
+         {salmon} alevin -lISR -1 {fq1} -2 {fq2} --chromium -i {index} -p {thread} -o salmon_out/{outprefix}_out --tgMap {tgmap} --whitelist {whitelist}
+         echo "Samlon alevin is complete" > {output}
+        """

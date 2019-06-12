@@ -1,0 +1,26 @@
+from os.path import join
+configfile: "config_cellranger.yaml"
+
+cellranger=config["CELLRANGER"]
+thread=config["THREAD"]
+outprefix=config["OUTPUT"]
+index=config["INDEX"]
+fastqs=config["FASTQS"]
+sample=config["SAMPLE"]
+
+rule all:
+    input: expand("cellranger_out/{outprefix}_out/outs/metrics_summary.csv", outprefix=config["OUTPUT"])
+
+rule run_cellranger:
+    output:
+        "cellranger_out/{outprefix}_out/outs/metrics_summary.csv"
+    benchmark:
+        "benchmarks_cellranger/{outprefix}.txt"
+    shell:
+        """
+         rm -rf cellranger_out/{outprefix}_out
+         cd cellranger_out
+         {cellranger} count --id={outprefix}_out --transcriptome={index} --fastqs=../{fastqs} --localcores={thread} --sample={sample} --nosecondary
+         cd ..
+        """
+

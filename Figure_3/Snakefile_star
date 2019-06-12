@@ -1,0 +1,51 @@
+from os.path import join
+configfile: "config_star.yaml"
+
+star=config["STAR"]
+thread=config["THREAD"]
+outprefix=config["OUTPUT"]
+index=config["INDEX"]
+fq1=config["FASTQ1"]
+fq2=config["FASTQ2"]
+len_CB=config["LENCB"]
+len_UMI=config["LENUMI"]
+whitelist=config["WHITELIST"]
+bc_start=1
+bc_len=len_CB
+umi_start=bc_start + bc_len
+umi_len=len_UMI
+
+rule all:
+    input: expand("star_out/{outprefix}_out/log.txt", outprefix=config["OUTPUT"])
+
+rule run_concat:
+    output:
+        "star_out/{outprefix}_out/concat.txt"
+    shell:
+        """
+         mkdir -p star_out/{outprefix}_out
+         cat {fq1} > star1.fastq.gz
+         cat {fq2} > star2.fastq.gz
+         echo "concatenate complete" > {output}
+        """
+
+rule run_star:
+    input:
+        "star_out/{outprefix}_out/concat.txt"
+    output:
+        "star_out/{outprefix}_out/log.txt"
+    benchmark:
+        "benchmarks_star/{outprefix}.txt"
+    shell:
+        """
+         {star} --runThreadN {thread} \
+          --genomeDir {index} --soloType Droplet --soloCBwhitelist {whitelist} \
+          --readFilesIn star2.fastq.gz star1.fastq.gz --readFilesCommand zcat \
+          --soloCBstart {bc_start} --soloCBlen {bc_len} --soloUMIstart {umi_start} --soloUMIlen {umi_len} \
+          --soloFeatures Gene
+         cp Solo.out/* star_out/{outprefix}_out/
+         rm -r Solo.out
+         rm star2.fastq.gz
+         rm star1.fastq.gz
+         echo "STARsolo is complete" > {output}
+        """

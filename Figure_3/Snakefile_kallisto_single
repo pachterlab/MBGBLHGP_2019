@@ -1,0 +1,39 @@
+from os.path import join
+configfile: "config_kallisto_single.yaml"
+
+kallisto=config["KALLISTO"]
+bustools=config["BUSTOOLS"]
+thread=config["THREAD"]
+outprefix=config["OUTPUT"]
+index=config["INDEX"]
+fastqs=config["FASTQS"]
+chem=config["CHEM"]
+tr2g=config["TR2G"]
+whitelist=config["WHITELIST"]
+
+rule all:
+    input: expand("kallisto_out_single/{outprefix}/log.txt", outprefix=config["OUTPUT"])
+
+rule run_kallisto:
+    output:
+        "kallisto_out_single/{outprefix}/matrix.ec"
+    benchmark:
+        "benchmarks_kallisto/{outprefix}_1.txt"
+    shell:
+        """
+         rm -rf kallisto_out_single/{outprefix}
+         {kallisto} bus -i {index} -x {chem} -t {thread} -o kallisto_out_single/{outprefix} {fastqs}
+        """
+
+rule run_correct_count:
+    input:
+        "kallisto_out_single/{outprefix}/matrix.ec"
+    output:
+        "kallisto_out_single/{outprefix}/log.txt"
+    benchmark:
+        "benchmarks_kallisto/{outprefix}_2.txt"
+    shell:
+        """
+         {bustools} correct -w {whitelist} -p kallisto_out_single/{outprefix}/output.bus | {bustools} sort -t {thread} -m 2G -T kallisto_out_single/{outprefix} -p - | {bustools} count -o kallisto_out_single/{outprefix}/genes -g {tr2g} -e kallisto_out_single/{outprefix}/matrix.ec -t kallisto_out_single/{outprefix}/transcripts.txt --genecounts -
+         echo "Kallisto single cell pipeline is complete" > kallisto_out_single/{outprefix}/log.txt
+        """
