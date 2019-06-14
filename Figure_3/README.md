@@ -1,1 +1,1 @@
-# Code for reproducing results of the paper "Modular and efficient pre-processing of single-cell RNA-seq"
+# Code for reproducing Figure 3 from the paper "Modular and efficient pre-processing of single-cell RNA-seq"
