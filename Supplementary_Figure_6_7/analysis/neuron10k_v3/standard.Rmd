@@ -14,7 +14,6 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r, message=FALSE}
-library(BUSpaRse)
 library(UpSetR)
 library(Seurat)
 library(EGSEA)
@@ -26,18 +25,14 @@ theme_set(theme_bw())
 source("./code/read_count_output.R")
 source("./code/plot_comparison.R")
 source("./code/gsea.R")
-name_regex <- "heart1k_v3"
-name_use <- "heart1k_v3"
+name_regex <- "neuron_?10k_v3"
+name_use <- "neuron10k_v3"
 species <- "Mus musculus"
 ```
 
 # Load data
 ```{r}
-mats <- list()
-mats$kallisto <- read_count_output(paste0("../kallisto_out_ensembl/", name_use),
-                                   name = "genes", tcc = FALSE)
-mats$cellranger <- read_cellranger(paste0("../cellranger_out_ensembl/cellranger3_",
-                                          name_use, "_out/outs/raw_feature_bc_matrix"))
+mats <- read_all_mats(name_regex)
 colnames(mats$cellranger) <- colnames(mats$cellranger) %>% str_remove("-1")
 ```
 

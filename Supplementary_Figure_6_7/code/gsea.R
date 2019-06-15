@@ -111,9 +111,9 @@ df4gsea_plot <- function(markers, kegg_df, gsea_res, species) {
 #' and the size of the points stands for number of marker genes in this gene set.
 #' 
 #' @inheritParams df4gsea_plot
-#' @param ncol Numbers of columns for the facetted plot.
+#' @param \dots Other arguments passed to `facet_grid`.
 #' @return A ggplot2 object.
-gsea_bubble <- function(markers, kegg_df, gsea_res, species, ncol) {
+gsea_bubble <- function(markers, kegg_df, gsea_res, species, ...) {
   n_clusts <- max(as.integer(as.character(markers$cluster)))
   markers %>% 
     df4gsea_plot(kegg_df, gsea_res, species) %>% 
@@ -124,7 +124,7 @@ gsea_bubble <- function(markers, kegg_df, gsea_res, species, ncol) {
     geom_point(alpha = 0.5) +
     scale_color_viridis_c(option = "E") +
     scale_size_continuous(name = "Number of\ngenes") +
-    facet_wrap(~ method, ncol = ncol) +
+    facet_grid(cols = vars(method), rows = NULL, ...) +
     labs(y = "Gene set")
 }
 

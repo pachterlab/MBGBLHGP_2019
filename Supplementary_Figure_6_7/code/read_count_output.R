@@ -1,6 +1,6 @@
 library(Matrix)
 library(data.table)
-library(BUSpaRse)
+library(DropletUtils)
 library(stringr)
 #' Read matrix along with barcode and gene names
 #' 
@@ -155,7 +155,7 @@ read_all_mats <- function(name_regex) {
   cat("Reading CellRanger output\n")
   cr_path <- get_dir(name_regex, "/home/single_cell_analysis/cellranger_out")
   cr_path <- paste0(cr_path, "/outs/raw_feature_bc_matrix")
-  out$cellranger <- read_cellranger(cr_path)
+  out$cellranger <- counts(read10xCounts(cr_path, col.names = TRUE))
   colnames(out$cellranger) <- colnames(out$cellranger) %>% str_remove("-1")
   # Salmon Alevin
   cat("Reading Salmon Alevin output\n")

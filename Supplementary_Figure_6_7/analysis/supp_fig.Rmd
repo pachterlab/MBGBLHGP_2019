@@ -85,10 +85,23 @@ To explore the performance of kallisto in mixed species data, we compared the nu
 
 # Figures
 ```{r fig4.1, fig.height=10, fig.width=8}
-fig1a <- imap(seus, ~ ElbowPlot(.x, ndims = 60) + ggtitle(.y) + theme_bw()) %>% 
+names(seus) <- c("kallisto", "Cell Ranger")
+fig1a <- imap(seus, ~ ElbowPlot(.x, ndims = 60) + 
+                labs(x = "Principal component", title = .y) + 
+                theme_bw()) %>% 
   ggarrange(plotlist = ., ncol = 2)
 fig1b <- DimPlot_list(seus, pt.size = 0.3)
-fig1c <- DimPlot_list(seus, "tsne", pt.size = 0.3)
+tsneplots <- imap(seus, 
+                function(.x, .y) {
+                  DimPlot(.x, reduction = "tsne", dims = c(1,2), pt.size = 0.3) +
+                    labs(x = "t-SNE 1", y = "t-SNE 2", title = .y) +
+                    theme_bw() +
+                    theme(legend.position = "none", 
+                          axis.ticks = element_blank(),
+                          axis.text = element_blank(),
+                          panel.grid = element_blank())
+                })
+fig1c <- ggarrange(plotlist = tsneplots, ncol = 2)
 ggarrange(fig1a, fig1b, fig1c, labels = LETTERS[1:3], ncol = 1, nrow = 3)
 ```
 
@@ -114,31 +127,53 @@ fig2a <- ggplot(clusts_alluvial, aes(y = n, axis1 = kallisto, axis2 = cellranger
         panel.grid = element_blank())
 fig2b <- ggplot(clust_assign_summary, aes(kallisto, cluster, fill = jaccard)) +
   geom_tile() +
-  scale_fill_viridis_c() +
+  scale_fill_viridis_c(name = "Jaccard index") +
   coord_equal() +
   theme(panel.background = element_rect(fill = viridis(256)[1]),
         panel.grid = element_blank()) +
   labs(x = "kallisto cluster", y = "CellRanger cluster") +
   scale_x_discrete(expand = c(0,0)) +
   scale_y_discrete(expand = c(0,0)) +
-  theme(legend.position = "top")
+  theme(legend.position = "top",
+        legend.title = element_text(vjust = 0.75))
 ggarrange(fig2a, fig2b, nrow = 1, ncol = 2, labels = LETTERS[1:2])
 ```
 
 **Supplementary Figure 2.** (A) Number of cells assigned to each cluster in kallisto results and CellRanger results. (B) Jaccard indices between each kallisto cluster and each CellRanger cluster.
 
+```{r}
+markers <- markers %>% 
+  ungroup() %>% 
+  mutate(method = str_replace(method, "cellranger", "Cell Ranger")) %>% 
+  group_by(method, cluster)
+markers_gsea <- markers_gsea %>% 
+  mutate(method = str_replace(method, "cellranger", "Cell Ranger"))
+```
+
 ```{r fig4.3, fig.width=12, fig.height=14}
-fig3a <- plot_n_markers(markers, 0.75, ncol = 2, nrow = 1, positive_only = TRUE, nudge_y = 30) +
-  labs(y = "Number of marker genes")
+fig3a <- plot_n_markers(markers, 0.75, ncol = 1, nrow = 2, positive_only = TRUE, nudge_y = 30) +
+  labs(y = "Number of marker genes") +
+  theme(text = element_text(size = 14),
+        strip.text = element_text(size = 14))
 fig3b <- ggplot(markers, aes(cluster, avg_logFC)) +
   geom_violin() +
   geom_jitter(size = 0.1, alpha = 0.1) +
-  facet_wrap(~ method, ncol = 2) +
-  labs(y = "Log fold change")
+  facet_wrap(~ method, ncol = 1) +
+  labs(y = "Log fold change") +
+  theme(text = element_text(size = 14),
+        strip.text = element_text(size = 14))
 fig3c <- markers %>% 
   top_n(20, avg_logFC) %>% 
-  gsea_bubble(kegg_df, markers_gsea, species, 4)
-ggarrange(fig3a, fig3b, fig3c, ncol = 1, nrow = 3, labels = LETTERS[1:3], heights = c(1,1,4))
+  gsea_bubble(kegg_df, markers_gsea, species, 4, scales = "free_x",
+              space = "free_x") +
+  theme(title = element_text(size = 14),
+        strip.text = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.text = element_text(size = 9))
+ggarrange(
+  ggarrange(fig3a, fig3b, ncol = 2, nrow = 1, labels = LETTERS[1:2]),
+  fig3c, nrow = 2, heights = c(1,2), labels = c("", "C")
+)
 ```
 
 **Supplementary Figure 3.** (A) Number of marker genes with log fold change of at least 0.75 and adjusted p < 0.05 in each cluster. (B) Log fold change of marker genes in each cluster. (C) Gene set enrichment of top 20 marker genes (by log fold change) in each cluster.
@@ -153,13 +188,13 @@ top_markers_inter <- intersect(top_markers_list[[1]], top_markers_list[[2]])
 
 ```{r}
 cor_use <- map(seus, ~ as.matrix(GetAssayData(.x, "counts")[top_markers_inter, ]))
-cors_spearman <- map_dbl(bcs_inter, ~ cor(cor_use$kallisto[, .x], cor_use$cellranger[, .x], 
+cors_spearman <- map_dbl(bcs_inter, ~ cor(cor_use$kallisto[, .x], cor_use$`Cell Ranger`[, .x], 
                                           method = "spearman"))
-cors_pearson <- map_dbl(bcs_inter, ~ cor(cor_use$kallisto[, .x], cor_use$cellranger[, .x], 
+cors_pearson <- map_dbl(bcs_inter, ~ cor(cor_use$kallisto[, .x], cor_use$`Cell Ranger`[, .x], 
                                           method = "pearson"))
 # Color by cluster in kallisto
-cors <- tibble(spearman = cors_spearman,
-               pearson = cors_pearson,
+cors <- tibble(Spearman = cors_spearman,
+               Pearson = cors_pearson,
                clust_use = seus$kallisto$seurat_clusters) %>% 
   gather("coefficient", "value", -clust_use)
 ```
@@ -170,12 +205,15 @@ fig4a <- ggplot(cors, aes(value)) +
   labs(x = "Correlation coefficient", y = "count") +
   #scale_fill_viridis_d(name = "kallisto cluster", option = "E") +
   facet_wrap(~ coefficient, ncol = 1, strip.position = "right") +
-  theme(legend.position = "top")
+  scale_y_continuous(name = "Count") +
+  theme(legend.position = "top",
+        strip.text = element_text(size = 11))
 fig4b <- ggplot(cors, aes(clust_use, value)) +
   geom_violin() +
   geom_jitter(size = 0.1, alpha = 0.1) +
   facet_wrap(~ coefficient, ncol = 1, strip.position = "right") +
-  labs(x = "kallisto cluster", y = "Correlation coefficient")
+  labs(x = "kallisto cluster", y = "Correlation coefficient") +
+  theme(strip.text = element_text(size = 11))
 ggarrange(fig4a, fig4b, ncol = 1, nrow = 2, labels = LETTERS[1:2])
 ```
 
@@ -192,11 +230,21 @@ seus_neuron <- map(seus, ~subset(.x, cells = neurons_inter))
 ```{r fig4.5, fig.width=9, fig.height=6}
 fig5a <- pmap(list(models[c("kallisto", "cellranger")], seus_neuron, names(seus_neuron)), 
              ~ plot_dimred(..1, grouping = ..2$label, alpha_cells = 0.5) +
-               ggtitle(..3)) %>% 
+               theme_classic() +
+               labs(x = "PC 1", y = "PC 2", title = ..3) +
+               theme(axis.line = element_blank(), 
+                     axis.text = element_blank(), 
+                     axis.ticks = element_blank(),
+                     plot.title = element_text(hjust = 0.5))) %>% 
   ggarrange(plotlist = ., ncol = 2, nrow = 1, common.legend = TRUE, legend = "bottom")
 fig5b <- pmap(list(models[c("kallisto", "cellranger")], seus_neuron, names(seus_neuron)), 
              ~ plot_dimred(..1, color_cells = "pseudotime", alpha_cells = 0.5) +
-               ggtitle(..3)) %>% 
+               theme_classic() +
+               labs(x = "PC 1", y = "PC 2", title = ..3) +
+               theme(axis.line = element_blank(), 
+                     axis.text = element_blank(), 
+                     axis.ticks = element_blank(),
+                     plot.title = element_text(hjust = 0.5))) %>% 
   ggarrange(plotlist = ., ncol = 2, nrow = 1, common.legend = TRUE, legend = "bottom")
 ggarrange(fig5a, fig5b, ncol = 1, nrow = 2, labels = LETTERS[1:2])
 ```
@@ -206,15 +254,35 @@ ggarrange(fig5a, fig5b, ncol = 1, nrow = 2, labels = LETTERS[1:2])
 ```{r}
 cell_species <- readRDS("./output/hgmm10k_v3/cell_species_full.rds")
 cell_species_compare <- readRDS("./output/hgmm10k_v3/cell_species_compare_full.rds")
+cell_species <- cell_species %>% 
+  dplyr::select(-barcode) %>% 
+  distinct() %>% 
+  mutate(method = str_replace(method, "cellranger", "Cell Ranger"))
+cell_species_compare <- cell_species_compare %>% 
+  filter(!is.na(prop_human.x), !is.na(prop_human.y)) %>% 
+  mutate(species = case_when(
+    species.x == "human" & species.y == "human" ~ "human",
+    species.x == "mouse" & species.y == "mouse" ~ "mouse",
+    TRUE ~ "mixed"
+  ))
+```
+
+```{r}
+power_trans <- function(power = 0.5) {
+  scales::trans_new("power", function(x) x^power, function(x) x^(1/power))
+}
 ```
 
 ```{r fig4.6, fig.width=8, fig.height=8}
 fig6a <- ggplot(cell_species, aes(n_human_umi, n_mouse_umi, color = species)) +
   geom_point(size = 0.5, alpha = 0.5) +
   facet_wrap(~ method, ncol = 2) +
-  labs(x = "Number of human UMIs", y = "Number of mouse UMIs")
+  labs(x = "Number of human UMIs", y = "Number of mouse UMIs") +
+  theme(strip.text = element_text(size = 12),
+        legend.text = element_text(size = 10)) +
+  guides(color = guide_legend(title = "Species", override.aes = list(size = 1, alpha = 1)))
 fig6b <- ggplot(cell_species_compare, aes(tot_umi.x, tot_umi.y)) +
-  geom_point(size = 0.5, alpha = 0.1) +
+  geom_point(size = 0.5, alpha = 0.02) +
   geom_abline(slope = 1, intercept = 0, color = "red", size = 0.3) +
   annotate("text", x = 1e3, y = 1e4, label = "y = x", color = "red") +
   labs(x = "kallisto", y = "CellRanger", title = "Total counts per barcode") +
@@ -223,20 +291,23 @@ fig6b <- ggplot(cell_species_compare, aes(tot_umi.x, tot_umi.y)) +
   scale_y_log10()
 fig6c <- ggplot(cell_species_compare, aes(prop_human.x, prop_human.y, 
                                           alpha = avg_counts)) +
-  geom_point(size = 0.5) +
+  geom_point(size = 0.25, aes(color = species)) +
   geom_abline(slope = 1, intercept = 0, color = "red", size = 0.3) +
   annotate("text", x = 0.5, y = 0.75, label = "y = x", color = "red") +
-  labs(x = "kallisto", y = "CellRanger", title = "Proportion of human UMIs") +
+  labs(x = "kallisto", y = "Cell Ranger", title = "Proportion of human UMIs") +
   coord_equal() +
-  scale_alpha_continuous(range = c(1.925e-3, 1), name = "Average total \nUMI counts") +
+  scale_alpha_continuous(range = c(0.025, 1), trans = power_trans(5),
+                         name = "Average total \nUMI counts") +
   theme(legend.position = c(0.83, 0.22), 
-        legend.background = element_blank())
+        legend.background = element_blank()) +
+  guides(color = "none",
+         alpha = guide_legend(override.aes = list(size = 1)))
 ggarrange(fig6a,
           ggarrange(fig6b, fig6c, nrow = 1, ncol = 2, labels = c("B", "C")),
           nrow = 2, ncol = 1,
           labels = "A")
 ```
 
-**Supplementary Figure 6.** (A) Barnyard plot for hgmm10k dataset from 10x processed with CellRanger and kallisto. (B) Consistency of total counts per barcode between kallisto results and CellRanger results (before removing empty droplets). (C) Proportion of UMIs from human genes in kallisto and CellRanger results (before removing empty droplets). Opacity of the points is proportional to the average of total UMI counts in kallisto results and CellRanger results.
+**Supplementary Figure 6.** (A) Barnyard plot for hgmm10k dataset from 10x processed with CellRanger and kallisto. Species were assigned by proportion of UMIs from the species of interest, e.g. cells with at least 90% of UMI counts from human genes will be assigned human. (B) Consistency of total counts per barcode between kallisto results and CellRanger results (before removing empty droplets). (C) Proportion of UMIs from human genes in kallisto and CellRanger results (before removing empty droplets). Opacity of the points is proportional to the average of total UMI counts in kallisto results and CellRanger results.
 
 # Supplementary references

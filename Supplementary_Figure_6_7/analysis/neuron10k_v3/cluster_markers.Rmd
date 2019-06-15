@@ -114,7 +114,7 @@ Even with this result, it's still hard to tell the cell type of each cluster. Fu
 ```{r marker_bubble, fig.height=10, fig.width=10}
 markers %>% 
   top_n(20, avg_logFC) %>% 
-  gsea_bubble(kegg_df, markers_gsea, species, 4)
+  gsea_bubble(kegg_df, markers_gsea, species)
 ```
 
 ```{r}

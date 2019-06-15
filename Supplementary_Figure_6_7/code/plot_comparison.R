@@ -266,11 +266,11 @@ get_jaccard_matrix <- function(set_list, plot = TRUE) {
 DimPlot_list <- function(seus, reduction = "pca", dims = c(1,2), ncol = 2, 
                          nrow = ceiling(length(seus) / ncol), arrange_grob = FALSE, ...) {
   if (reduction == "pca") {
-    axis_labels <- paste0("PC", dims)
+    axis_labels <- paste("PC", dims)
   } else if (reduction == "tsne") {
-    axis_labels <- paste0("tSNE", dims)
+    axis_labels <- paste("t-SNE", dims)
   } else {
-    axis_labels <- paste0(toupper(reduction), dims)
+    axis_labels <- paste(toupper(reduction), dims)
   }
   plots <- imap(seus, 
                 function(.x, .y) {
