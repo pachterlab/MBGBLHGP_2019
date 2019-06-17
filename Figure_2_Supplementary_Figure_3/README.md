@@ -1,0 +1,1 @@
+# Code for reproducing Figure 2 and the benchmark panel figures constituting Supplementary Figure 3 from the paper "Modular and efficient pre-processing of single-cell RNA-seq"
