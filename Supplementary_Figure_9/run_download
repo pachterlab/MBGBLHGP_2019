@@ -1,0 +1,162 @@
+mkdir -p fastqs/
+cd fastqs/
+wget http://cf.10xgenomics.com/samples/cell-exp/3.0.0/heart_1k_v2/heart_1k_v2_fastqs.tar
+wget http://cf.10xgenomics.com/samples/cell-exp/3.0.0/heart_1k_v3/heart_1k_v3_fastqs.tar
+wget http://cf.10xgenomics.com/samples/cell-exp/3.0.0/hgmm_1k_v2/hgmm_1k_v2_fastqs.tar
+wget http://cf.10xgenomics.com/samples/cell-exp/3.0.0/pbmc_1k_v3/pbmc_1k_v3_fastqs.tar
+wget http://s3-us-west-2.amazonaws.com/10x.files/samples/cell-exp/3.0.0/pbmc_10k_v3/pbmc_10k_v3_fastqs.tar
+wget http://s3-us-west-2.amazonaws.com/10x.files/samples/cell-exp/3.0.0/neuron_10k_v3/neuron_10k_v3_fastqs.tar
+wget http://s3-us-west-2.amazonaws.com/10x.files/samples/cell-exp/2.1.0/pbmc8k/pbmc8k_fastqs.tar
+wget http://cf.10xgenomics.com/samples/cell-exp/3.0.0/hgmm_1k_v3/hgmm_1k_v3_fastqs.tar
+wget http://s3-us-west-2.amazonaws.com/10x.files/samples/cell-exp/2.1.0/neuron_9k/neuron_9k_fastqs.tar
+wget http://s3-us-west-2.amazonaws.com/10x.files/samples/cell-exp/3.0.0/hgmm_10k_v3/hgmm_10k_v3_fastqs.tar
+
+wget https://sra-download.ncbi.nlm.nih.gov/traces/sra69/SRZ/007692/SRR7692543/M1Fovea1.bam
+~/tools/bamtofastq M1Fovea1.bam SRR7692543
+mv SRR7692543/M1Fovea1_MissingLibrary_1_HG23HALXX/*gz SRR7692543/
+
+wget ftp://ftp.sra.ebi.ac.uk/vol1/srr/SRR825/000/SRR8257100
+/home/fgao/software/sratoolkit.2.9.2-centos_linux64/bin/fastq-dump --split-files SRR8257100
+mkdir SRR8257100
+mv SRR8257100*fastq SRR8257100
+cd SRR8257100
+gzip *fastq
+mv SRR8257100_1.fastq.gz SRR8257100_S1_L001_R1_001.fastq.gz
+mv SRR8257100_2.fastq.gz SRR8257100_S1_L001_R2_001.fastq.gz
+mv SRR8257100_3.fastq.gz SRR8257100_S1_L001_I1_001.fastq.gz
+cd ..
+
+wget https://sra-download.ncbi.nlm.nih.gov/traces/sra74/SRZ/008327/SRR8327928/PDX110_possorted_genome_bam.bam
+~/tools/bamtofastq PDX110_possorted_genome_bam.bam SRR8327928
+mv SRR8327928/PDX110A_MissingLibrary_1_HT37WBGX5/*gz SRR8327928/
+
+wget https://sra-download.ncbi.nlm.nih.gov/traces/sra73/SRZ/008206/SRR8206317/d10_Tet_possorted_genome_bam.bam
+~/tools/bamtofastq d10_Tet_possorted_genome_bam.bam SRR8206317/
+mv SRR8206317/MAR1_POOL_2_10_tet_SI-GA-C8_MissingLibrary_1_HJNKJBGX5/*gz SRR8206317/
+
+wget https://sra-download.ncbi.nlm.nih.gov/traces/sra61/SRZ/006998/SRR6998058/Inf_rep1_possorted_genome_bam.bam
+~/tools/bamtofastq Inf_rep1_possorted_genome_bam.bam SRR6998058/
+mv SRR6998058/Inf_Rep1_aggregate_counts_MissingLibrary_1_H2VNNBCX2/*gz SRR6998058/
+mv SRR6998058/Inf_Rep1_aggregate_counts_MissingLibrary_1_HYY5NBCXY/bamtofastq_S1_L001_I1_001.fastq.gz SRR6998058/bamtofastq_S1_L003_I1_001.fastq.gz
+mv SRR6998058/Inf_Rep1_aggregate_counts_MissingLibrary_1_HYY5NBCXY/bamtofastq_S1_L001_R1_001.fastq.gz SRR6998058/bamtofastq_S1_L003_R1_001.fastq.gz
+mv SRR6998058/Inf_Rep1_aggregate_counts_MissingLibrary_1_HYY5NBCXY/bamtofastq_S1_L001_R2_001.fastq.gz SRR6998058/bamtofastq_S1_L003_R2_001.fastq.gz
+mv SRR6998058/Inf_Rep1_aggregate_counts_MissingLibrary_1_HYY5NBCXY/bamtofastq_S1_L002_I1_001.fastq.gz SRR6998058/bamtofastq_S1_L004_I1_001.fastq.gz
+mv SRR6998058/Inf_Rep1_aggregate_counts_MissingLibrary_1_HYY5NBCXY/bamtofastq_S1_L002_R1_001.fastq.gz SRR6998058/bamtofastq_S1_L004_R1_001.fastq.gz
+mv SRR6998058/Inf_Rep1_aggregate_counts_MissingLibrary_1_HYY5NBCXY/bamtofastq_S1_L002_R2_001.fastq.gz SRR6998058/bamtofastq_S1_L004_R2_001.fastq.gz
+
+/home/fgao/software/sratoolkit.2.9.2-centos_linux64/bin/fastq-dump --split-files SRR8513910
+mkdir SRR8513910
+mv SRR8513910*fastq SRR8513910
+cd SRR8513910
+gzip *fastq
+mv SRR8513910_1.fastq.gz SRR8513910_S1_L001_I1_001.fastq.gz
+mv SRR8513910_2.fastq.gz SRR8513910_S1_L001_R1_001.fastq.gz
+mv SRR8513910_3.fastq.gz SRR8513910_S1_L001_R2_001.fastq.gz
+cd ..
+
+wget ftp://ftp.sra.ebi.ac.uk/vol1/srr/SRR863/003/SRR8639063
+/home/fgao/software/sratoolkit.2.9.2-centos_linux64/bin/fastq-dump --split-files ./SRR8639063
+rm SRR8639063
+mkdir SRR8639063
+mv SRR8639063*fastq SRR8639063
+cd SRR8639063
+gzip *fastq
+mv SRR8639063_1.fastq.gz SRR8639063_S1_L001_R1_001.fastq.gz
+mv SRR8639063_2.fastq.gz SRR8639063_S1_L001_R2_001.fastq.gz
+mv SRR8639063_3.fastq.gz SRR8639063_S1_L001_I1_001.fastq.gz
+cd ..
+
+/home/fgao/software/sratoolkit.2.9.2-centos_linux64/bin/fastq-dump --split-files SRR8611943
+mkdir SRR8611943
+mv SRR8611943*fastq SRR8611943
+cd SRR8611943
+gzip *fastq
+mv SRR8611943_1.fastq.gz SRR8611943_S1_L001_R1_001.fastq.gz
+mv SRR8611943_2.fastq.gz SRR8611943_S1_L001_R2_001.fastq.gz
+mv SRR8611943_3.fastq.gz SRR8611943_S1_L001_I1_001.fastq.gz
+cd ..
+
+/home/fgao/software/sratoolkit.2.9.2-centos_linux64/bin/fastq-dump --split-files SRR8599150
+mkdir SRR8599150
+mv SRR8599150*fastq SRR8599150
+cd SRR8599150
+gzip *fastq
+mv SRR8599150_1.fastq.gz SRR8599150_S1_L001_R1_001.fastq.gz
+mv SRR8599150_2.fastq.gz SRR8599150_S1_L001_R2_001.fastq.gz
+mv SRR8599150_3.fastq.gz SRR8599150_S1_L001_I1_001.fastq.gz
+cd ..
+
+wget ftp://ftp.ebi.ac.uk/pub/databases/microarray/data/experiment/MTAB/E-MTAB-7320/SAG657A3_S2_L002_R1_001.fastq.gz
+wget ftp://ftp.ebi.ac.uk/pub/databases/microarray/data/experiment/MTAB/E-MTAB-7320/SAG657A3_S2_L002_R2_001.fastq.gz
+wget ftp://ftp.ebi.ac.uk/pub/databases/microarray/data/experiment/MTAB/E-MTAB-7320/SAG657A3_S2_L002_I1_001.fastq.gz
+mkdir EMTAB7320
+mv SAG657A3* EMTAB7320
+
+wget ftp://ftp.sra.ebi.ac.uk/vol1/run/ERR301/ERR3015753/do26386_S1_L008.bam
+~/tools/bamtofastq do26386_S1_L008.bam ERR3015753/
+mv ERR3015753/*/*gz ERR3015753/
+
+wget https://sra-download.ncbi.nlm.nih.gov/traces/sra76/SRZ/008524/SRR8524760/KS_10x_iPSC_KS1_K1_1.bam
+~/tools/bamtofastq KS_10x_iPSC_KS1_K1_1.bam SRR8524760/
+mv SRR8524760/KS_10x_iPSC_KS1_K1-1_MissingLibrary_1_H77VWBGX5/*gz SRR8524760
+
+wget https://sra-download.ncbi.nlm.nih.gov/traces/sra61/SRZ/006956/SRR6956073/10xWT6S_possorted_genome_bam.bam
+wget https://sra-download.ncbi.nlm.nih.gov/traces/sra64/SRZ/007299/SRR7299563/Vehicle_ExtendedRef.bam
+~/tools/bamtofastq 10xWT6S_possorted_genome_bam.bam SRR6956073/
+~/tools/bamtofastq Vehicle_ExtendedRef.bam SRR7299563/
+mv SRR6956073/ZF6S_WT_10X1_MissingLibrary_1_HMMNFBGX3/*gz SRR6956073
+mv SRR6956073/ZF6S_WT_10X1_MissingLibrary_1_HN5JGBGX3/bamtofastq_S1_L001_I1_001.fastq.gz SRR6956073/bamtofastq_S1_L005_I1_001.fastq.gz
+mv SRR6956073/ZF6S_WT_10X1_MissingLibrary_1_HN5JGBGX3/bamtofastq_S1_L001_R1_001.fastq.gz SRR6956073/bamtofastq_S1_L005_R1_001.fastq.gz
+mv SRR6956073/ZF6S_WT_10X1_MissingLibrary_1_HN5JGBGX3/bamtofastq_S1_L001_R2_001.fastq.gz SRR6956073/bamtofastq_S1_L005_R2_001.fastq.gz
+mv SRR6956073/ZF6S_WT_10X1_MissingLibrary_1_HN5JGBGX3/bamtofastq_S1_L002_I1_001.fastq.gz SRR6956073/bamtofastq_S1_L006_I1_001.fastq.gz
+mv SRR6956073/ZF6S_WT_10X1_MissingLibrary_1_HN5JGBGX3/bamtofastq_S1_L002_R1_001.fastq.gz SRR6956073/bamtofastq_S1_L006_R1_001.fastq.gz
+mv SRR6956073/ZF6S_WT_10X1_MissingLibrary_1_HN5JGBGX3/bamtofastq_S1_L002_R2_001.fastq.gz SRR6956073/bamtofastq_S1_L006_R2_001.fastq.gz
+mv SRR6956073/ZF6S_WT_10X1_MissingLibrary_1_HN5JGBGX3/bamtofastq_S1_L003_I1_001.fastq.gz SRR6956073/bamtofastq_S1_L007_I1_001.fastq.gz
+mv SRR6956073/ZF6S_WT_10X1_MissingLibrary_1_HN5JGBGX3/bamtofastq_S1_L003_R1_001.fastq.gz SRR6956073/bamtofastq_S1_L007_R1_001.fastq.gz
+mv SRR6956073/ZF6S_WT_10X1_MissingLibrary_1_HN5JGBGX3/bamtofastq_S1_L003_R2_001.fastq.gz SRR6956073/bamtofastq_S1_L007_R2_001.fastq.gz
+mv SRR6956073/ZF6S_WT_10X1_MissingLibrary_1_HN5JGBGX3/bamtofastq_S1_L004_I1_001.fastq.gz SRR6956073/bamtofastq_S1_L008_I1_001.fastq.gz
+mv SRR6956073/ZF6S_WT_10X1_MissingLibrary_1_HN5JGBGX3/bamtofastq_S1_L004_R1_001.fastq.gz SRR6956073/bamtofastq_S1_L008_R1_001.fastq.gz
+mv SRR6956073/ZF6S_WT_10X1_MissingLibrary_1_HN5JGBGX3/bamtofastq_S1_L004_R2_001.fastq.gz SRR6956073/bamtofastq_S1_L008_R2_001.fastq.gz
+
+mv SRR7299563/DK_Vehicle_MissingLibrary_1_HGYMVBCXY/*gz SRR7299563
+
+
+rm 10xWT6S_possorted_genome_bam.bam
+rm Vehicle_ExtendedRef.bam
+rm KS_10x_iPSC_KS1_K1_1.bam
+rm M1Fovea1.bam
+rm PDX110_possorted_genome_bam.bam
+
+tar -xvf heart_1k_v2_fastqs.tar
+tar -xvf heart_1k_v3_fastqs.tar
+tar -xvf hgmm_1k_v2_fastqs.tar
+tar -xvf hgmm_1k_v3_fastqs.tar
+tar -xvf pbmc_1k_v3_fastqs.tar
+tar -xvf pbmc_10k_v3_fastqs.tar
+tar -xvf neuron_10k_v3_fastqs.tar
+tar -xvf pbmc8k_fastqs.tar
+tar -xvf neuron_9k_fastqs.tar
+tar -xvf hgmm_10k_v3_fastqs.tar
+
+rm heart_1k_v2_fastqs.tar
+rm heart_1k_v3_fastqs.tar
+rm hgmm_1k_v2_fastqs.tar
+rm hgmm_1k_v3_fastqs.tar
+rm pbmc_1k_v3_fastqs.tar
+rm pbmc_10k_v3_fastqs.tar
+rm neuron_10k_v3_fastqs.tar
+rm pbmc8k_fastqs.tar
+rm neuron_9k_fastqs.tar
+rm hgmm_10k_v3_fastqs.tar
+
+ls */*I1_001.fastq.gz > I1_ID.txt
+rm -rf seq_depth.txt
+while read line;
+do
+zcat $line | wc | awk '{print $1}' >> seq_depth.txt
+done < I1_ID.txt
+
+paste I1_ID.txt seq_depth.txt > ID_seq_depth.txt
+sed -i 's/\//\t/g' ID_seq_depth.txt
+awk '{arr[$1]+=$3;} END {for (i in arr) print i, arr[i]/4}' ID_seq_depth.txt | sort > seq_depth_stat.txt
+
