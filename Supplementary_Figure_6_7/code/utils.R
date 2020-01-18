@@ -134,3 +134,52 @@ importCDS <- function (otherCDS, seurat_scale=FALSE, import_all = FALSE)
   }
   return(monocle_cds)
 }
+
+#' Knee plot for both spliced and unspliced
+#' 
+#' @param bc_spliced DropletUtils output for spliced matrix.
+#' @param bc_unspliced DropletUtils output for unspliced matrix.
+#' @param spliced_y y coordinate to put text label for spliced.
+#' @param unspliced_y y coordinate to put text label for unspliced.
+knee2 <- function(bc_spliced, bc_unspliced, spliced_y, unspliced_y) {
+  bc_ranks <- list(spliced = bc_spliced, unspliced = bc_unspliced)
+  knee_plt <- tibble(rank = map(bc_ranks, ~ .x[["rank"]]),
+                     total = map(bc_ranks, ~ .x[["total"]]),
+                     dataset = names(bc_ranks)) %>% 
+    unnest() %>% 
+    distinct() %>% 
+    dplyr::filter(total > 0)
+  annot <- tibble(inflection = map_dbl(bc_ranks, ~ metadata(.x)[["inflection"]]),
+                  rank_cutoff = map_dbl(bc_ranks, ~ max(.x$rank[.x$total > metadata(.x)[["inflection"]]])),
+                  dataset = names(bc_ranks))
+  p <- ggplot(knee_plt, aes(total, rank, color = dataset)) +
+    geom_line() +
+    geom_vline(aes(xintercept = inflection, color = dataset), 
+               data = annot, linetype = 2) +
+    geom_hline(aes(yintercept = rank_cutoff, color = dataset),
+               data = annot, linetype = 2) +
+    scale_x_log10() +
+    scale_y_log10() +
+    labs(y = "Rank", x = "Total UMIs")
+  return(p)
+}
+
+#' Get cluster label coordinates
+#' 
+#' @param labels Character or factor vector for labels.
+#' @param coords Numeric matrix with two columns, for x and y coordinates of the dimension reduction; the number of rows must match the length of `labels`.
+#' @param ... Extra arguments passed to `text`.
+#' @return Nothing. Just adds text labels to the plot if the plotting device is still on.
+label_clusters <- function(labels, coords, ...) {
+  df <- tibble(label = labels, x = coords[,1], y = coords[,2])
+  df <- df %>% 
+    group_by(label) %>% 
+    summarize(x = median(x), y = median(y))
+  text(df$x, df$y, df$label, ...)
+}
+
+cell_pal <- function(cell_cats, pal_fun) {
+  categories <- sort(unique(cell_cats))
+  pal <- setNames(pal_fun(length(categories)), categories)
+  pal[cell_cats]
+}

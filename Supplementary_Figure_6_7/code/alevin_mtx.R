@@ -1,6 +1,5 @@
 # Convert all alevin output into sparse matrix
 library(purrr)
-source("./code/read_count_output.R")
 ###########
 # Get dataset names
 alevin_dirs <- list.dirs("../salmon_out/", recursive = FALSE)

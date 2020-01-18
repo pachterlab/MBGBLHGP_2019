@@ -90,15 +90,15 @@ ggplot(markers, aes(cluster, avg_logFC)) +
 kegg <- readRDS(paste0("./data/kegg/kegg_", str_replace(species, " ", "_"), ".rds"))
 kegg_df <- read_csv(paste0("./data/kegg/kegg_df_", str_replace(species, " ", "_"), ".csv"))
 entrez_inter <- readRDS(paste0("./output/", name_use, "/entrez_inter.rds"))
+go_df <- readRDS("./data/go/go_Mus_musculus.rds")
 ```
 
 Here I use GSEA on marker genes of each cluster to find the cell type of each cluster.
-```{r, results='hide', message=FALSE}
+```{r}
 markers_gsea <- markers %>% 
-  top_n(20, avg_logFC) %>% 
-  cluster_wise_gsea(species = species, gns = gns, 
-                    universe = entrez_inter,
-                    gsets = kegg$kg.sets)
+  #top_n(20, avg_logFC) %>% 
+  cluster_wise_gsea(gns = gns, universe = rownames(GetAssayData(seus$kallisto)),
+                    n_bonferroni = sum(n_clusts))
 ```
 
 See what pathways are enriched in each cluster
@@ -110,6 +110,18 @@ markers_gsea %>%
 ```
 
 Even with this result, it's still hard to tell the cell type of each cluster. Furthermore, I tweaked the filtering criterion of the marker genes until I don't get into error. The error occurs when all marker genes for a cluster can't be matched to a kegg pathway, and this is more likely to happen when there're few marker genes, which is often the case when the filtering criterion is stringent. I know that the filtering criterion is quite arbitrary. But at least I can tell several of the clusters are different types of neurons, some are some sort of immune cells, and some are endothelial cells. I also know that cluster 15 from kallisto is red blood cells.
+
+```{r, fig.height=10, fig.width=10}
+markers_gsea %>% 
+  filter(p_log > uniform_log) %>% 
+  mutate(cluster = fct_relevel(cluster, as.character(1:max(n_clusts)))) %>% 
+  group_by(method, cluster) %>% 
+  top_n(5, p_log) %>% 
+  ggplot(aes(cluster, Term, color = p_log, size = Significant / Annotated)) +
+  geom_point(alpha = 0.5) +
+  scale_color_viridis_c(option = "E") +
+  facet_grid(cols = vars(method), scales = "free_x")
+```
 
 ```{r marker_bubble, fig.height=10, fig.width=10}
 markers %>% 

@@ -16,6 +16,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r, message=FALSE}
 library(Seurat)
 library(tidyverse)
+library(org.Mm.eg.db)
 theme_set(theme_bw())
 source("./code/plot_comparison.R")
 source("./code/gsea.R")
@@ -24,9 +25,9 @@ name_use <- "neuron10k_v3"
 species <- "Mus musculus"
 seus <- readRDS(paste0("./output/", name_use, "/seurat.rds"))
 gns <- read_csv(paste0("./data/Ensembl/gns_", str_replace(species, " ", "_"), ".csv"))
-kegg <- readRDS(paste0("./data/kegg/kegg_", str_replace(species, " ", "_"), ".rds"))
-kegg_df <- read_csv(paste0("./data/kegg/kegg_df_", str_replace(species, " ", "_"), ".csv"))
-entrez_inter <- readRDS(paste0("./output/", name_use, "/entrez_inter.rds"))
+#kegg <- readRDS(paste0("./data/kegg/kegg_", str_replace(species, " ", "_"), ".rds"))
+go_df <- readRDS(paste0("./data/go/go_", str_replace(species, " ", "_"), ".rds"))
+#entrez_inter <- readRDS(paste0("./output/", name_use, "/entrez_inter.rds"))
 n_clusts <- map_dbl(seus, ~ length(unique(.x@meta.data$RNA_snn_res.1)))
 ```
 
@@ -34,32 +35,57 @@ How shall I do the differential expression? I can either do it pairwise or one m
 
 # All clusters
 ```{r, message=FALSE, warning=FALSE, cache=TRUE}
-method_markers <- map(seus[2:4], ~ methodDE(seus$kallisto, .x, test.use = "LR", 
-                                            latent.vars = "nCount_RNA", verbose = FALSE) %>% 
-                        filter(p_val_adj < 0.05))
+method_markers <- map(seus[2], ~ methodDE(seus$kallisto, .x, test.use = "LR", 
+                                            latent.vars = "nCount_RNA", verbose = FALSE))
 ```
 
 See what genes are differentially "expressed"
 ```{r}
-method_markers <- map(method_markers, left_join, y = gns, by = "gene")
+method_markers <- map(method_markers, left_join, y = gns, by = c("gene" = "ensembl"))
 ```
 
 Won't make volcano plots as the p-values are pretty much 0.
 
-Manual inspection reveals quite a few ribosomal genes, predicted genes, and housekeeping genes. I'm doing GSEA again to see what kinds of genes are overrepresented.
+Manual inspection reveals quite a few ribosomal genes, predicted genes, and housekeeping genes. I'm doing GSEA again to see what kinds of genes are overrepresented. Before, I used `egsea.ora` from the `EGSEA` package. Later I realized that that's just the hypergeometric test, and overlaps among gene sets is not taken into account. Now, I'm using `topGO`, which does take into account the network topology of GO terms. There're newer packages that also take into account network topology, but I'll use `topGO` here as it's a classic. Burning question: Shall I use all Ensembl genes detected or just the ones that have GO annotations for this analysis? Here the KS test is used to compare the p-value distributions of the genes with a GO term to those in the gene universe without, so the choice of the gene universe matters. I inspected the source code of topGO, and it seems that only genes with GO annotations are used anyway, so I can just use all genes detected here. 
 
+What about correcting for multiple testing? There are 20 datasets for which GSEA is run. The vignette of topGO says
+
+> For the methods that account for the GO topology like elim and weight, the problem of multiple
+testing is even more complicated. Here one computes the p-value of a GO term conditioned on the
+neighbouring terms. The tests are therefore not independent and the multiple testing theory does not
+directly apply. We like to interpret the p-values returned by these methods as corrected or not affected
+by multiple testing.
+
+This paragraph applies since I'm using the default weight01 algorithm which blends elim and weight. I suppose I'll just correct for the 20 datasets, with Bonferroni. Anyway, the points are generally below $y = x$ even without correction, so I'm already making the point. How about the 3 different ontologies? Those are tested separately. Suppose one ontology is one test, as suggested by the topGO vignette. Then that would be 3 tests. Then I should multiply the p-values by 60.
+
+Another burning question: What to do with mixed species datasets? Mouse annotations and human annotations are tested separately. That would be 6 ontologies per dataset. Since there're 3 mixed species datasets, that would add 9 to the 60. Which gene universe shall I use? Mouse annotations only have mouse genes, and human genes are moot there. However, including human genes anyway would affect the p-value. I suppose I'll only use mouse genes when testing mouse ontologies, and only human genes when testing human ontologies.
+
+Burning question: Shall I include gene sets that do not include any DE gene? It's just impossible for them to be enriched among DE genes even without any sort of testing. I inspected the source code of topGO and found that if all entries of the contingency table is 0, like when no gene in that gene set is in the gene universe, then the test won't be run and the gene set is assigned p = 1. However, there are cases when it's just impossible for the gene set to be enriched even without running any test, like when the number of DE genes is less than expected. This will create a peak near p = 1, as those gene sets would have been very significant when running Fisher's exact test for depletion. The problem is, correction for network topology makes this more complicated. It can be that a parent term gets p = 1 after removing genes that made the child term significant, but the test is neverthess run. I think I'll just keep everything for which the test is run. That peak near p = 1 shows that many gene sets are so depleted among "DE" genes, which is good news.
 ```{r, results='hide'}
 method_gsea <- imap(method_markers, 
-                   ~ egsea_ora(.x$gene, "mouse", gns, entrez_inter, kegg$kg.sets,
-                               logFC = .x$avg_logFC) %>% 
-                     egsea_results_df() %>% 
+                   ~ topgo_df(.x$gene, .x$p_val_adj < 0.05, gns, 
+                              universe = rownames(GetAssayData(seus$kallisto)), statistic = "fisher", 
+                              n_bonferroni = 69) %>% 
                      mutate(method = .y)) %>% 
   bind_rows()
 ```
 
 ```{r}
-method_gsea %>% 
-  filter(p.adj < 0.05)
+hist(method_gsea$raw.p.value, breaks = 100)
+```
+
+
+```{r, fig.width=9, fig.height=6}
+ggplot(method_gsea, aes(uniform_log, p_log)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), fill = "gray80") +
+  geom_abline(intercept = 0, slope = 1, color = "red") +
+  geom_point(aes(color = ontology)) +
+  geom_text_repel(aes(label = label, color = ontology), box.padding = 0.75) +
+  #facet_grid(cols = vars(method)) +
+  coord_equal() +
+  labs(x = expression(Expected~~-log[10](italic(p))), 
+       y = expression(Observed~~-log[10](italic(p)))) +
+  theme_classic()
 ```
 
 Ribosomal genes are overrepresented, as expected.
@@ -86,8 +112,12 @@ saveRDS(method_markers, paste0("./output/", name_use, "/method_markers.rds"))
 
 Plot whether genes in each gene set tend to be enriched or depleted
 
+```{r}
+method_markers$entrezgene <- as.character(method_markers$entrezgene)
+```
+
 ```{r method_nmarkers}
-gsea_logFC_bar(method_markers, kegg_df, method_gsea, species, ncol = 3, strip_position = "top")
+gsea_logFC_bar(method_markers, go_df, method_gsea, species, ncol = 3, strip_position = "top")
 ```
 
 Ricosomal genes are the most common among genes in enriched gene sets, and these genes tend to be depleted in kallisto (single gene). If we're not interested in studying expression of ribosomal genes, then this should be fine. About olfactory transduction, again, genes families are concerned, so I also suspect that UMI multimapping is the culprit here.

@@ -22,7 +22,7 @@ knee_plot <- function(bc_ranks) {
     unnest() %>% 
     distinct() %>% 
     filter(total > 0)
-  annot <- tibble(inflection = map_dbl(bc_ranks, ~ .x[["inflection"]]),
+  annot <- tibble(inflection = map_dbl(bc_ranks, ~ metadata(.x)[["inflection"]]),
                   method = names(bc_ranks))
   p <- ggplot(knee_plt, aes(rank, total, color = method)) +
     geom_line() +

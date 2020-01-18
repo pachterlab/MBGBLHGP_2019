@@ -1,12 +1,71 @@
 %% This BibTeX bibliography file was created using BibDesk.
 %% http://bibdesk.sourceforge.net/
 
-%% Created for Lambda Moses at 2019-06-11 16:09:24 -0700 
+%% Created for Lambda Moses at 2020-01-17 17:04:55 -0800 
 
 
 %% Saved with string encoding Unicode (UTF-8) 
 
 
+
+@article{Alexa2006,
+	Abstract = {Motivation: The result of a typical microarray experiment is a long list of genes with corresponding expression measurements. This list is only the starting point for a meaningful biological interpretation. Modern methods identify relevant biological processes or functions from gene expression data by scoring the statistical significance of predefined functional gene groups, e.g. based on Gene Ontology (GO). We develop methods that increase the explanatory power of this approach by integrating knowledge about relationships between the GO terms into the calculation of the statistical significance.Results: We present two novel algorithms that improve GO group scoring using the underlying GO graph topology. The algorithms are evaluated on real and simulated gene expression data. We show that both methods eliminate local dependencies between GO terms and point to relevant areas in the GO graph that remain undetected with state-of-the-art algorithms for scoring functional terms. A simulation study demonstrates that the new methods exhibit a higher level of detecting relevant biological terms than competing methods.Availability: topgo.bioinf.mpi-inf.mpg.deContact:alexa{\char64}mpi-sb.mpg.deSupplementary Information: Supplementary data are available at Bioinformatics online.},
+	Author = {Alexa, Adrian and Rahnenf{\"u}hrer, J{\"o}rg and Lengauer, Thomas},
+	Date-Added = {2020-01-17 17:04:33 -0800},
+	Date-Modified = {2020-01-17 17:04:42 -0800},
+	Doi = {10.1093/bioinformatics/btl140},
+	Isbn = {1367-4803},
+	Journal = {Bioinformatics},
+	Journal1 = {Bioinformatics},
+	Month = {1/18/2020},
+	Number = {13},
+	Pages = {1600--1607},
+	Title = {Improved scoring of functional groups from gene expression data by decorrelating GO graph structure},
+	Ty = {JOUR},
+	Url = {https://doi.org/10.1093/bioinformatics/btl140},
+	Volume = {22},
+	Year = {2006},
+	Year1 = {2006/04/10/},
+	Bdsk-Url-1 = {https://doi.org/10.1093/bioinformatics/btl140}}
+
+@article{Ashburner2000,
+	Abstract = {Genomic sequencing has made it clear that a large fraction of the genes specifying the core biological functions are shared by all eukaryotes. Knowledge of the biological role of such shared proteins in one organism can often be transferred to other organisms. The goal of the Gene Ontology Consortium is to produce a dynamic, controlled vocabulary that can be applied to all eukaryotes even as knowledge of gene and protein roles in cells is accumulating and changing. To this end, three independent ontologies accessible on the World-Wide Web (http://www.geneontology.org) are being constructed: biological process, molecular function and cellular component.},
+	Author = {Ashburner, Michael and Ball, Catherine A. and Blake, Judith A. and Botstein, David and Butler, Heather and Cherry, J. Michael and Davis, Allan P. and Dolinski, Kara and Dwight, Selina S. and Eppig, Janan T. and Harris, Midori A. and Hill, David P. and Issel-Tarver, Laurie and Kasarskis, Andrew and Lewis, Suzanna and Matese, John C. and Richardson, Joel E. and Ringwald, Martin and Rubin, Gerald M. and Sherlock, Gavin},
+	Da = {2000/05/01},
+	Date-Added = {2020-01-17 16:59:27 -0800},
+	Date-Modified = {2020-01-17 17:00:11 -0800},
+	Doi = {10.1038/75556},
+	Id = {Ashburner2000},
+	Isbn = {1546-1718},
+	Journal = {Nature Genetics},
+	Number = {1},
+	Pages = {25--29},
+	Title = {Gene Ontology: tool for the unification of biology},
+	Ty = {JOUR},
+	Url = {https://doi.org/10.1038/75556},
+	Volume = {25},
+	Year = {2000},
+	Bdsk-Url-1 = {https://doi.org/10.1038/75556}}
+
+@article{go2018,
+	Abstract = {The Gene Ontology resource (GO; http://geneontology.org) provides structured, computable knowledge regarding the functions of genes and gene products. Founded in 1998, GO has become widely adopted in the life sciences, and its contents are under continual improvement, both in quantity and in quality. Here, we report the major developments of the GO resource during the past two years. Each monthly release of the GO resource is now packaged and given a unique identifier (DOI), enabling GO-based analyses on a specific release to be reproduced in the future. The molecular function ontology has been refactored to better represent the overall activities of gene products, with a focus on transcription regulator activities. Quality assurance efforts have been ramped up to address potentially out-of-date or inaccurate annotations. New evidence codes for high-throughput experiments now enable users to filter out annotations obtained from these sources. GO-CAM, a new framework for representing gene function that is more expressive than standard GO annotations, has been released, and users can now explore the growing repository of these models. We also provide the `GO ribbon'widget for visualizing GO annotations to a gene; the widget can be easily embedded in any web page.},
+	Author = {The Gene Ontology Consortium},
+	Date-Added = {2020-01-17 16:59:19 -0800},
+	Date-Modified = {2020-01-17 16:59:49 -0800},
+	Doi = {10.1093/nar/gky1055},
+	Isbn = {0305-1048},
+	Journal = {Nucleic Acids Research},
+	Journal1 = {Nucleic Acids Res},
+	Month = {1/18/2020},
+	Number = {D1},
+	Pages = {D330--D338},
+	Title = {The Gene Ontology Resource: 20 years and still GOing strong},
+	Ty = {JOUR},
+	Url = {https://doi.org/10.1093/nar/gky1055},
+	Volume = {47},
+	Year = {2018},
+	Year1 = {2018/11/05/},
+	Bdsk-Url-1 = {https://doi.org/10.1093/nar/gky1055}}
 
 @article{Street2018,
 	Abstract = {Single-cell transcriptomics allows researchers to investigate complex communities of heterogeneous cells. It can be applied to stem cells and their descendants in order to chart the progression from multipotent progenitors to fully differentiated cells. While a variety of statistical and computational methods have been proposed for inferring cell lineages, the problem of accurately characterizing multiple branching lineages remains difficult to solve.},
@@ -72,25 +131,6 @@
 	Volume = {20},
 	Year = {2019},
 	Bdsk-Url-1 = {https://doi.org/10.1038/s41590-018-0276-y}}
-
-@article{Alhamdoosh2017,
-	Abstract = {Gene set enrichment (GSE) analysis allows researchers to efficiently extract biological insight from long lists of differentially expressed genes by interrogating them at a systems level. In recent years, there has been a proliferation of GSE analysis methods and hence it has become increasingly difficult for researchers to select an optimal GSE tool based on their particular dataset. Moreover, the majority of GSE analysis methods do not allow researchers to simultaneously compare gene set level results between multiple experimental conditions.The ensemble of genes set enrichment analyses (EGSEA) is a method developed for RNA-sequencing data that combines results from twelve algorithms and calculates collective gene set scores to improve the biological relevance of the highest ranked gene sets. EGSEA's gene set database contains around 25 000 gene sets from sixteen collections. It has multiple visualization capabilities that allow researchers to view gene sets at various levels of granularity. EGSEA has been tested on simulated data and on a number of human and mouse datasets and, based on biologists'feedback, consistently outperforms the individual tools that have been combined. Our evaluation demonstrates the superiority of the ensemble approach for GSE analysis, and its utility to effectively and efficiently extrapolate biological functions and potential involvement in disease processes from lists of differentially regulated genes.EGSEA is available as an R package at http://www.bioconductor.org/packages/EGSEA/. The gene sets collections are available in the R package EGSEAdata from http://www.bioconductor.org/packages/EGSEAdata/.Supplementary data are available at Bioinformatics online.},
-	Author = {Alhamdoosh, Monther and Ng, Milica and Wilson, Nicholas J and Sheridan, Julie M and Huynh, Huy and Wilson, Michael J and Ritchie, Matthew E},
-	Booktitle = {Bioinformatics},
-	Date-Added = {2019-06-11 16:00:27 -0700},
-	Date-Modified = {2019-06-11 16:01:26 -0700},
-	Doi = {10.1093/bioinformatics/btw623},
-	Isbn = {1367-4803},
-	Journal = {Bioinformatics},
-	Journal1 = {bioinformatics},
-	Number = {3},
-	Pages = {414--424},
-	Title = {Combining multiple tools outperforms individual methods in gene set enrichment analyses},
-	Ty = {JOUR},
-	Url = {https://doi.org/10.1093/bioinformatics/btw623},
-	Volume = {33},
-	Year = {2017},
-	Bdsk-Url-1 = {https://doi.org/10.1093/bioinformatics/btw623}}
 
 @article{Saelens2019,
 	Abstract = {Trajectory inference approaches analyze genome-wide omics data from thousands of single cells and computationally infer the order of these cells along developmental trajectories. Although more than 70 trajectory inference tools have already been developed, it is challenging to compare their performance because the input they require and output models they produce vary substantially. Here, we benchmark 45 of these methods on 110 real and 229 synthetic datasets for cellular ordering, topology, scalability and usability. Our results highlight the complementarity of existing tools, and that the choice of method should depend mostly on the dataset dimensions and trajectory topology. Based on these results, we develop a set of guidelines to help users select the best method for their dataset. Our freely available data and evaluation pipeline (https://benchmark.dynverse.org) will aid in the development of improved tools designed to analyze increasingly large and complex single-cell datasets.},
