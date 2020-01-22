@@ -89,10 +89,11 @@ gsea_bar_full <- function(species, name_regex, mapping,
     names(method_markers)[names(method_markers) == "tmp"] <- col_use
   }
   if (species == "Arabidopsis thaliana") {
-    id_use <- "entrez"
-    names(method_markers)[names(method_markers) == "gene"] <- "tmp"
-    names(method_markers)[names(method_markers) == "entrezgene"] <- "gene"
-    names(method_markers)[names(method_markers) == "tmp"] <- "ensembl"
+    id_use <- "entrezgene"
+    # To deal with some peculiarity of org.At.tair.db, which thinks ensembl ID is entrez
+    names(gns)[names(gns) == "entrezgene"] <- "tmp"
+    names(gns)[names(gns) == "ensembl"] <- "entrezgene"
+    names(gns)[names(gns) == "tmp"] <- "other"
   } else {
     id_use <- "ensembl"
   }
@@ -116,11 +117,6 @@ gsea_bar_full <- function(species, name_regex, mapping,
   }
   
   method_gsea$dataset <- name_use
-  if (species == "Arabidopsis thaliana") {
-    names(method_markers)[names(method_markers) == "gene"] <- "tmp"
-    names(method_markers)[names(method_markers) == "ensembl"] <- "gene"
-    names(method_markers)[names(method_markers) == "tmp"] <- "entrezgene"
-  }
   out <- method_markers %>% 
     left_join(go_df, by = c("gene" = "ensembl")) %>% 
     inner_join(method_gsea, by = "GO.ID") %>% 

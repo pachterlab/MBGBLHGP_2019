@@ -199,6 +199,7 @@ topgo_df <- function(genes, pvals, gns, universe,
   }
   
   # topGO
+  if (ID == "entrezgene") ID <- "entrez"  
   ontologies <- c("BP", "MF", "CC")
   out <- map_dfr(ontologies, function(o) {
     godata <- new("topGOdata",
